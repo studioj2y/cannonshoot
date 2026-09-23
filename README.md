@@ -173,6 +173,12 @@ src/
 
    `.gitignore` 已配置好，`node_modules/` 与 `dist/` 不会进仓库。
 
+   > ⚠️ **首次提交务必用 `git add .`（或 `git add -A`），不要只 add 你改动过的那几个文件。**
+   > Vercel 是读 `package.json` 来判断项目类型的：仓库里一旦缺它，构建会直接死在
+   > `npm error enoent Could not read package.json: /vercel/path0/package.json`，
+   > 同时 Framework Preset 会只剩 `Other` 一个选项。这两个现象是同一个原因。
+   > 推之前用 `git status --short` 扫一眼，确认 `package.json`、`index.html`、`src/` 都在列表里。
+
 2. 打开 [vercel.com/new](https://vercel.com/new)，选 **Import Git Repository**，选中这个仓库。
 3. Framework Preset 会自动识别为 **Vite**；确认 Build Command = `npm run build`、Output Directory = `dist`，直接 Deploy。
 4. 约 1 分钟后拿到 `https://<项目名>.vercel.app`，可以直接分享给别人玩。
@@ -183,6 +189,14 @@ src/
 npx vercel        # 首次会引导登录 + 关联项目，产出预览地址
 npx vercel --prod # 部署到正式域名
 ```
+
+### 部署报错排查
+
+| 报错现象 | 原因 | 处理 |
+|---|---|---|
+| `ENOENT: ... open '/vercel/path0/package.json'` 且 Preset 只能选 `Other` | 仓库里没有 `package.json` —— 首次提交漏推了文件 | 补齐文件后 `git push`，Vercel 自动重新部署 |
+| 构建成功但访问 404 | `Output Directory` 与实际产物目录没对上 | 确认 Output Directory = `dist`（本仓库 `vercel.json` 已声明） |
+| Preset 显示 `Other` 但构建正常 | 项目创建时 Vercel 没识别出框架 | 无需处理 —— `vercel.json` 里的 `framework: "vite"` 会覆盖预设。想收拾干净就在 Settings → Build & Development Settings 手动选 Vite，或删掉项目重新 Import |
 
 ### 自定义域名
 
