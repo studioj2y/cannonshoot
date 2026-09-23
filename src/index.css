@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  /* 手指在画面上拖动是在瞄准，不能让页面跟着滚，也不能下拉触发刷新 */
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  /* iOS 横屏时不会自动放大字号 */
+  -webkit-text-size-adjust: 100%;
+}

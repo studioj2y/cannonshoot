@@ -81,7 +81,10 @@ interface UiText {
   title: string;
   subtitle: string;
   tips: string[];
+  /** 触屏设备的操作说明（与鼠标不同，按设备二选一显示） */
+  tipsTouch: string[];
   start: string;
+  startTouch: string;
   langLabel: string;
   pauseTitle: string;
   resume: string;
@@ -97,6 +100,10 @@ interface UiText {
   yaw: string;
   pitch: string;
   controls: string;
+  /** 触屏设备的底部操作提示 */
+  controlsTouch: string;
+  /** 按住瞄准时浮在屏幕上的提示 */
+  aiming: string;
   trajectory: string;
   sound: string;
   wonTitle: string;
@@ -122,7 +129,15 @@ export const UI: Record<Lang, UiText> = {
       '🧱 借助物理和连锁反应把建筑砸塌。',
       '⌨️ A/D 左右转 · W/S 调仰角 · R 重开 · Esc 暂停',
     ],
+    tipsTouch: [
+      '👆 手指按住屏幕开始瞄准：左右拖动转视角，上下拖动调仰角。',
+      '✋ 手指一松开就发射——瞄准满意了再松手。',
+      '🎚️ 先用底部滑杆调好力度，拖动时看轨迹线预判落点。',
+      '🧱 借助物理和连锁反应把建筑砸塌。',
+      '⏸ 右上角可以暂停或重开本关。',
+    ],
     start: '开始游戏',
+    startTouch: '开始游戏 · 按住瞄准，松手发射',
     langLabel: '语言',
     pauseTitle: '⏸ 已暂停',
     resume: '继续游戏',
@@ -138,6 +153,8 @@ export const UI: Record<Lang, UiText> = {
     yaw: '水平角',
     pitch: '仰角',
     controls: '鼠标：瞄准 · 左键/空格：发射 · WASD：瞄准 · Q/E：调力 · R：重开 · Esc：暂停',
+    controlsTouch: '按住屏幕拖动：瞄准 · 松手：发射',
+    aiming: '瞄准中 · 松手发射',
     trajectory: '轨迹线',
     sound: '音效',
     wonTitle: '过关！🎉',
@@ -161,7 +178,15 @@ export const UI: Record<Lang, UiText> = {
       '🧱 Use physics and chain reactions to knock down the structure.',
       '⌨️ A/D rotate · W/S elevate · R restart · Esc pause',
     ],
+    tipsTouch: [
+      '👆 Press and hold anywhere to aim: drag sideways to turn, up or down to elevate.',
+      '✋ Let go to fire — so release only once the aim looks right.',
+      '🎚️ Set the power with the bottom slider; the trajectory line previews the shot.',
+      '🧱 Use physics and chain reactions to knock down the structure.',
+      '⏸ Pause or restart from the top-right buttons.',
+    ],
     start: 'START PLAYING',
+    startTouch: 'START · hold to aim, release to fire',
     langLabel: 'Language',
     pauseTitle: '⏸ Paused',
     resume: 'Resume',
@@ -177,6 +202,8 @@ export const UI: Record<Lang, UiText> = {
     yaw: 'Yaw',
     pitch: 'Elevation',
     controls: 'Mouse: aim · Click/Space: fire · WASD aim · Q/E power · R restart · Esc pause',
+    controlsTouch: 'Hold & drag: aim · Release: fire',
+    aiming: 'AIMING · release to fire',
     trajectory: 'Trajectory',
     sound: 'Sound',
     wonTitle: 'LEVEL CLEAR! 🎉',

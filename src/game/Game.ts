@@ -16,6 +16,8 @@ export interface HudState {
   stars: number;
   status: 'playing' | 'won' | 'lost';
   combo: number;
+  /** 触控设备上是否正处于「按住瞄准」状态（手指按住未松开） */
+  aiming: boolean;
 }
 
 interface Brick {
@@ -41,6 +43,17 @@ const MAX_SPEED = 90;
 const MIN_POWER = 20;
 const MAX_POWER = 60;
 
+/* 视角跨度：画面「整个宽度」对应水平转 110°，「整个高度」对应仰角 90°。
+   鼠标用绝对位置映射直接套这个跨度；触控把手指位移按同一跨度换算成角度，
+   因此手机与电脑的手感一致。想单独调触控手感只改 TOUCH_SENS。 */
+const AIM_YAW_SPAN = 110;
+const AIM_PITCH_SPAN = 90;
+const TOUCH_SENS = 1.0;
+
+const YAW_LIMIT = 60;
+const PITCH_MIN = -5;
+const PITCH_MAX = 75;
+
 export class Game {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -61,6 +74,11 @@ export class Game {
   power = 40;
   showTraj = true;
   paused = false;
+  /** 触控：按住正在瞄准（手指未松开） */
+  aiming = false;
+  /** 触控：正在瞄准的那根手指的 pointerId，null = 没在瞄准 */
+  private aimPointer: number | null = null;
+  private aimLast = { x: 0, y: 0 };
 
   levelIndex = 0;
   level!: LevelDef;
@@ -120,9 +138,16 @@ export class Game {
     this.scene.add(this.trajLine);
 
     window.addEventListener('resize', this.onResize);
-    this.renderer.domElement.addEventListener('mousemove', this.onMouseMove);
-    this.renderer.domElement.addEventListener('mousedown', this.onMouseDown);
-    this.renderer.domElement.addEventListener('wheel', this.onWheel, { passive: true });
+    // 统一走 Pointer Events：鼠标是「绝对位置跟随 + 点击即发射」，
+    // 触控是「按住拖动旋转视角 + 松手发射」，在同一个处理函数里按 pointerType 分流。
+    const el = this.renderer.domElement;
+    el.style.touchAction = 'none'; // 不设的话浏览器会把拖动当成滚动/缩放，中途发 pointercancel
+    el.addEventListener('pointerdown', this.onPointerDown);
+    el.addEventListener('pointermove', this.onPointerMove);
+    el.addEventListener('pointerup', this.onPointerUp);
+    el.addEventListener('pointercancel', this.onPointerCancel);
+    el.addEventListener('contextmenu', this.onContextMenu);
+    el.addEventListener('wheel', this.onWheel, { passive: true });
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
 
@@ -257,6 +282,7 @@ export class Game {
     this.comboCount = 0;
     this.confetti = false;
     this.endTimer = 0;
+    this.endAim(true); // 重置时若手指还按着，先退出瞄准态，否则松手会打到新一关
     this.yaw = 0;
     this.pitch = 22;
     this.power = 40;
@@ -508,24 +534,113 @@ export class Game {
   }
 
   // ---------- input ----------
+
+  /** 现在这一刻允许开炮吗（触控按住前会先问一次，避免按住半天松手是空响） */
+  private canFire() {
+    return this.status === 'playing' && !this.paused && this.ammo > 0 && this.reloadTimer <= 0;
+  }
+
+  private setAim(pointerId: number, on: boolean) {
+    this.aimPointer = on ? pointerId : null;
+    this.aiming = on;
+  }
+
+  /** 松开/作废当前瞄准（在重置关卡、组件卸载时调用，避免状态卡住） */
+  private endAim(release: boolean) {
+    const id = this.aimPointer;
+    if (id === null) {
+      this.aiming = false;
+      return;
+    }
+    if (release) {
+      try {
+        this.renderer.domElement.releasePointerCapture(id);
+      } catch {
+        /* 指针已消失时 release 会抛错，忽略 */
+      }
+    }
+    this.setAim(id, false);
+  }
+
   private onResize = () => {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
   };
-  private onMouseMove = (e: MouseEvent) => {
-    if (this.paused || this.status !== 'playing') return;
-    const r = this.renderer.domElement.getBoundingClientRect();
-    const nx = (e.clientX - r.left) / r.width - 0.5;
-    const ny = (e.clientY - r.top) / r.height - 0.5;
-    this.yaw = THREE.MathUtils.clamp(-nx * 110, -60, 60);
-    this.pitch = THREE.MathUtils.clamp(-ny * 90 + 20, -5, 75);
-  };
-  private onMouseDown = (e: MouseEvent) => {
+
+  private onPointerDown = (e: PointerEvent) => {
     audio.init();
+    // 只认直接落在 canvas 上的按下：点 HUD 面板（暂停/重开/滑杆）不该发射
+    if (e.target !== this.renderer.domElement) return;
+
+    if (e.pointerType === 'touch') {
+      // 阻止本次触摸派生出兼容的 mouse 事件，也顺手挡掉默认手势
+      e.preventDefault();
+      if (this.aimPointer !== null) return; // 已有一根手指在瞄准，忽略后续手指
+      if (!this.canFire()) return; // 打光了/装填中就别进瞄准态，免得白按
+      this.setAim(e.pointerId, true);
+      this.aimLast.x = e.clientX;
+      this.aimLast.y = e.clientY;
+      // 手指可能滑出画面再松开，捕获指针才能保证收到 pointerup
+      try {
+        this.renderer.domElement.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    // 鼠标 / 触控笔：保持原来的「点击即发射」
     if (e.button === 0) this.fire();
   };
+
+  private onPointerMove = (e: PointerEvent) => {
+    if (this.paused || this.status !== 'playing') return;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+
+    if (e.pointerType === 'touch') {
+      if (e.pointerId !== this.aimPointer) return;
+      e.preventDefault();
+      const dx = e.clientX - this.aimLast.x;
+      const dy = e.clientY - this.aimLast.y;
+      this.aimLast.x = e.clientX;
+      this.aimLast.y = e.clientY;
+      // 用「相对位移」而不是「手指所在位置」，这样按下的一瞬间视角不会突然跳过去。
+      // 方向：手指右滑 → 视角右转；手指上滑 → 抬高炮口（与鼠标方向一致）。
+      const yawPerPx = (AIM_YAW_SPAN / r.width) * TOUCH_SENS;
+      const pitchPerPx = (AIM_PITCH_SPAN / r.height) * TOUCH_SENS;
+      this.yaw = THREE.MathUtils.clamp(this.yaw - dx * yawPerPx, -YAW_LIMIT, YAW_LIMIT);
+      this.pitch = THREE.MathUtils.clamp(this.pitch - dy * pitchPerPx, PITCH_MIN, PITCH_MAX);
+      return;
+    }
+
+    // 鼠标 / 触控笔：绝对位置映射（原有手感不变）
+    const nx = (e.clientX - r.left) / r.width - 0.5;
+    const ny = (e.clientY - r.top) / r.height - 0.5;
+    this.yaw = THREE.MathUtils.clamp(-nx * AIM_YAW_SPAN, -YAW_LIMIT, YAW_LIMIT);
+    this.pitch = THREE.MathUtils.clamp(-ny * AIM_PITCH_SPAN + 20, PITCH_MIN, PITCH_MAX);
+  };
+
+  private onPointerUp = (e: PointerEvent) => {
+    if (e.pointerType !== 'touch' || e.pointerId !== this.aimPointer) return;
+    e.preventDefault();
+    this.endAim(true);
+    this.fire(); // 松手开炮
+  };
+
+  /** 系统吞掉了这根手指（来电、系统手势、切换 App）——只退出瞄准，不发射 */
+  private onPointerCancel = (e: PointerEvent) => {
+    if (e.pointerId !== this.aimPointer) return;
+    this.endAim(false);
+  };
+
+  /** 长按不要弹右键菜单（触屏上按住瞄准时很容易触发） */
+  private onContextMenu = (e: Event) => {
+    e.preventDefault();
+  };
+
   private onWheel = (e: WheelEvent) => {
     this.power = THREE.MathUtils.clamp(this.power - Math.sign(e.deltaY) * 1.5, MIN_POWER, MAX_POWER);
   };
@@ -567,10 +682,10 @@ export class Game {
     // keyboard aim
     if (this.status === 'playing') {
       const s = 55 * dt;
-      if (this.keys['a']) this.yaw = THREE.MathUtils.clamp(this.yaw + s, -60, 60);
-      if (this.keys['d']) this.yaw = THREE.MathUtils.clamp(this.yaw - s, -60, 60);
-      if (this.keys['w']) this.pitch = THREE.MathUtils.clamp(this.pitch + s, -5, 75);
-      if (this.keys['s']) this.pitch = THREE.MathUtils.clamp(this.pitch - s, -5, 75);
+      if (this.keys['a']) this.yaw = THREE.MathUtils.clamp(this.yaw + s, -YAW_LIMIT, YAW_LIMIT);
+      if (this.keys['d']) this.yaw = THREE.MathUtils.clamp(this.yaw - s, -YAW_LIMIT, YAW_LIMIT);
+      if (this.keys['w']) this.pitch = THREE.MathUtils.clamp(this.pitch + s, PITCH_MIN, PITCH_MAX);
+      if (this.keys['s']) this.pitch = THREE.MathUtils.clamp(this.pitch - s, PITCH_MIN, PITCH_MAX);
       if (this.keys['e']) this.power = THREE.MathUtils.clamp(this.power + 20 * dt, MIN_POWER, MAX_POWER);
       if (this.keys['q']) this.power = THREE.MathUtils.clamp(this.power - 20 * dt, MIN_POWER, MAX_POWER);
     }
@@ -664,6 +779,7 @@ export class Game {
       stars: this.stars,
       status: this.status,
       combo: performance.now() < this.comboUntil ? this.comboCount : 0,
+      aiming: this.aiming,
     });
   }
 
@@ -682,6 +798,14 @@ export class Game {
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    const el = this.renderer.domElement;
+    this.endAim(true); // 若正按住瞄准，先释放指针捕获
+    el.removeEventListener('pointerdown', this.onPointerDown);
+    el.removeEventListener('pointermove', this.onPointerMove);
+    el.removeEventListener('pointerup', this.onPointerUp);
+    el.removeEventListener('pointercancel', this.onPointerCancel);
+    el.removeEventListener('contextmenu', this.onContextMenu);
+    el.removeEventListener('wheel', this.onWheel);
     this.renderer.dispose();
     this.container.innerHTML = '';
   }
