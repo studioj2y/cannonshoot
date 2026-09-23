@@ -54,6 +54,13 @@ const YAW_LIMIT = 60;
 const PITCH_MIN = -5;
 const PITCH_MAX = 75;
 
+/* 相机机位：沿瞄准方向的「水平投影」后退 CAM_BACK，再抬到固定离地高度 CAM_HEIGHT。
+   注意不能用 `cannonPos + dir * -6.5` 那种写法：dir.y = sin(pitch)，仰角越高相机
+   就被推得越低——22° 时 y≈1.77，75° 时 y≈-2.08 直接钻到地面以下，同时水平距离
+   从 6.5 缩到 1.68，炮身顶到镜头前把砖墙和轨迹线全部挡住。 */
+const CAM_BACK = 5.5;
+const CAM_HEIGHT = 3.4;
+
 export class Game {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -749,11 +756,19 @@ export class Game {
   private render() {
     // cannon orientation
     this.cannon.rotation.y = THREE.MathUtils.degToRad(this.yaw);
-    this.barrel.rotation.x = -THREE.MathUtils.degToRad(this.pitch);
+    // 符号必须是正号：barrel 的局部朝向是 -z，绕 +x 转 +pitch 才会把炮口抬起来
+    // （aimDir 的 y 分量是 +sin(pitch)）。原先写 -pitch，炮管视觉朝下而炮弹朝上飞，
+    // 两者相差 2×pitch（默认 22° 时差 44°），炮口也画在贴地的位置。
+    this.barrel.rotation.x = THREE.MathUtils.degToRad(this.pitch);
 
-    // first-person camera behind cannon
+    // third-person camera behind cannon: back off horizontally, then sit at a fixed height.
+    // （旧写法是 addScaledVector(dir, -6.5)：dir 带 sin(pitch)，仰角越高相机越低，
+    //   默认 22° 就会让炮身挡住砖墙和轨迹线，见 CAM_BACK 处的注释。）
     const dir = this.aimDir;
-    const camPos = this.cannon.position.clone().addScaledVector(dir, -6.5).add(new THREE.Vector3(0, 2.6, 0));
+    const back = new THREE.Vector3(dir.x, 0, dir.z);
+    if (back.lengthSq() < 1e-6) back.set(0, 0, -1); // 垂直向上瞄准时水平分量退化，兜个底
+    back.normalize();
+    const camPos = this.cannon.position.clone().addScaledVector(back, -CAM_BACK).add(new THREE.Vector3(0, CAM_HEIGHT, 0));
     this.camera.position.lerp(camPos, 0.25);
     const look = this.cannon.position.clone().addScaledVector(dir, 18);
     this.camera.lookAt(look);
