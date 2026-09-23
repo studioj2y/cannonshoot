@@ -6,6 +6,7 @@ import {
   ENV,
   PALETTE,
   mat,
+  glassMaterial,
   unlit,
   fadeMaterial,
   trailMaterial,
@@ -14,6 +15,7 @@ import {
   gemGeometry,
   icoGeometry,
   prismGeometry,
+  shardGeometry,
   buildScenery,
   disposeArt,
   type Scenery,
@@ -43,6 +45,8 @@ interface Brick {
   initPos: CANNON.Vec3;
   initQuat: CANNON.Quaternion;
   knocked: boolean;
+  /** 玻璃砖已碎（已从世界与 bricks 列表里摘掉），防止同一块被记账两次 */
+  shattered: boolean;
   score: number;
 }
 
@@ -58,6 +62,15 @@ const GRAVITY = -19.6;
 const MAX_SPEED = 90;
 const MIN_POWER = 20;
 const MAX_POWER = 60;
+
+/* 玻璃砖：撞击速度超过阈值就当场碎裂消失。
+   ⚠️ 这个阈值只判「撞击」，不判静置压力（引擎本来也不算应力）——
+      所以「一排玻璃砖安静地托着一块板」永远不会自己碎。
+      取值 3.0：远高于求解器安顿时的抖动（<1），又低于任何一次真实命中
+      （炮弹命中 20+，高处掉下来的砖 8+，连锁碰撞也有 4~6）。
+      ⚠️ 改这个数要同步 tools/check-levels.mjs 与 tools/playtest.mjs。 */
+const GLASS_BREAK_V = 3.0;
+const GLASS_SHARD_COLOR = ENV.glass;
 
 /* 视角跨度：画面「整个宽度」对应水平转 110°，「整个高度」对应仰角 90°。
    鼠标用绝对位置映射直接套这个跨度；触控把手指位移按同一跨度换算成角度，
@@ -128,6 +141,10 @@ export class Game {
   private brickMat: CANNON.Material;
   private ballMat: CANNON.Material;
   private endTimer = 0;
+  /* 本帧内被判定要碎的玻璃砖。⚠️ 必须排队、不能当场摘 ——
+     collide 回调是在 world.step() 内部触发的，那时候求解器还握着这些 body，
+     当场 removeBody 属于「在遍历中改数组」。排队到 step 之后再清算是标准做法。 */
+  private shatterQueue: Brick[] = [];
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -268,6 +285,9 @@ export class Game {
     // 也留在场景中（网格不再同步，变成冻结的黑球继续碰撞）。
     for (const b of [...this.balls]) this.removeBall(b);
     this.balls = [];
+    // 上一关排队待碎的玻璃砖必须丢掉：它们指向的 body 马上会被 removeBody，
+    // 残留下来会让新一关的计分凭空多出几块
+    this.shatterQueue = [];
     // 几何体共享，只释放粒子独占的材质
     for (const p of this.particles) { this.scene.remove(p.mesh); (p.mesh.material as THREE.Material).dispose(); }
     this.particles = [];
@@ -297,6 +317,7 @@ export class Game {
 
   private addBrick(def: BrickDef) {
     const color = PALETTE[def.color];
+    const isGlass = def.kind === 'glass';
     /* 手作差异：按坐标算一个确定性档位（0/1/2 → 明度 ±6%），成排的砖才不像复制粘贴。
        ⚠️ 必须确定性 —— 换成随机数的话，同一块砖每次 reset() 换关卡颜色都会变。 */
     const variant = Math.abs(Math.round((def.pos[0] + def.pos[1] * 7 + def.pos[2] * 13) * 3)) % 3;
@@ -307,15 +328,17 @@ export class Game {
       const [r, h] = def.size;
       geo = gemGeometry(r, h); // 目标宝石：八面体，剪影在小屏上也认得出
       shape = new CANNON.Cylinder(r, r, h, 12);
-      material = def.target ? unlit(ENV.gem) : mat(color, variant);
+      material = def.target ? unlit(ENV.gem) : isGlass ? glassMaterial(color, variant) : mat(color, variant);
     } else {
       const [w, h, d] = def.size;
       geo = brickGeometry(w, h, d); // 倒角砖：相邻砖之间自然形成一道暗勾缝
       shape = new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2));
-      material = mat(color, variant);
+      material = isGlass ? glassMaterial(color, variant) : mat(color, variant);
     }
     const mesh = new THREE.Mesh(geo, material);
-    mesh.castShadow = true;
+    /* 玻璃砖不投影：半透明的块投出一片实心黑影子最假，而且阴影是低多边形风格里
+       读「体量」的主要手段 —— 不给影子，玻璃就自然被读成「轻的、透的」。 */
+    mesh.castShadow = !isGlass;
     mesh.receiveShadow = true;
     mesh.position.set(...def.pos);
     if (def.rotY) mesh.rotation.y = def.rotY;
@@ -340,11 +363,20 @@ export class Game {
       initPos: body.position.clone(),
       initQuat: body.quaternion.clone(),
       knocked: false,
+      shattered: false,
       score: def.score ?? 100,
     };
     if (!def.static) {
       body.addEventListener('collide', (e: any) => {
         const v = e.contact.getImpactVelocityAlongNormal?.() ?? 0;
+        /* 玻璃先判碎：碎掉之后「响一声 + 撒一把砖色碎屑」就没意义了，
+           它会走自己的碎裂表现（玻璃声 + 棱柱玻璃碴）。 */
+        if (isGlass) {
+          if (Math.abs(v) > GLASS_BREAK_V) {
+            this.queueShatter(brick);
+            return;
+          }
+        }
         if (Math.abs(v) > 3.5) {
           audio.play('hit', Math.min(1, Math.abs(v) / 14));
           this.spawnParticles(mesh.position, color, 5, Math.min(1, Math.abs(v) / 12));
@@ -352,6 +384,39 @@ export class Game {
       });
     }
     this.bricks.push(brick);
+  }
+
+  // ---------- glass ----------
+
+  /** 判定要碎的玻璃砖只入队，真正的摘除在 drainShatters()（world.step 之后） */
+  private queueShatter(brick: Brick) {
+    if (brick.def.static || brick.shattered) return;
+    brick.shattered = true; // 先置位：同一帧里可能有多个接触点，只碎一次
+    this.shatterQueue.push(brick);
+  }
+
+  private drainShatters() {
+    if (!this.shatterQueue.length) return;
+    const queue = this.shatterQueue;
+    this.shatterQueue = [];
+    for (const b of queue) {
+      /* ⚠️ 位置要在这里先取走：接下来 mesh 会被摘出场景、body 会被移出世界，
+         之后再读 b.mesh.position 拿到的是上一帧同步的旧值，粒子就会撒错地方
+         （mesh 的位置是 step 末尾按 body 同步的，而碎裂发生在 step 中间）。 */
+      const at = new THREE.Vector3(b.body.position.x, b.body.position.y, b.body.position.z);
+      // 先撤物理体：这一步之后它不再提供任何支撑（这正是玻璃砖的意义）
+      this.world.removeBody(b.body);
+      this.levelGroup.remove(b.mesh);
+      /* ⚠️ 必须从 bricks 里摘掉。留着的话 allSettled() 会一直看到这个「冻住的」
+         body —— 它的速度停在碎裂那一刻，永远不为 0，于是判负/判胜的收尾条件
+         永远不成立，整个关卡卡在结算前。几何体与材质是 art.ts 的共享缓存，
+         不能在这里 dispose（同 removeBall 的约定）。 */
+      const i = this.bricks.indexOf(b);
+      if (i >= 0) this.bricks.splice(i, 1);
+      this.markKnocked(b);
+      this.spawnParticles(at, GLASS_SHARD_COLOR, 14, 0.9, true);
+    }
+    audio.play('shatter', Math.min(1, 0.55 + queue.length * 0.15));
   }
 
   // ---------- firing ----------
@@ -424,11 +489,13 @@ export class Game {
     if (i >= 0) this.balls.splice(i, 1);
   }
 
-  private spawnParticles(pos: THREE.Vector3 | CANNON.Vec3, color: number, n: number, power = 1) {
+  /** shard = true 时用三棱柱玻璃碴而不是圆润的多面体碎屑（几何走 art.ts 的缓存） */
+  private spawnParticles(pos: THREE.Vector3 | CANNON.Vec3, color: number, n: number, power = 1, shard = false) {
     if (this.particles.length > 220) return;
+    const geo = shard ? shardGeometry() : icoGeometry(0.12, 0);
     for (let i = 0; i < n; i++) {
       // 材质必须独占（逐颗淡出），几何体走共享缓存
-      const m = new THREE.Mesh(icoGeometry(0.12, 0), fadeMaterial(color));
+      const m = new THREE.Mesh(geo, fadeMaterial(color));
       m.position.set(pos.x, pos.y, pos.z);
       this.scene.add(m);
       this.particles.push({
@@ -459,8 +526,27 @@ export class Game {
   }
 
   // ---------- scoring ----------
-  private checkKnocked() {
+
+  /**
+   * 记一次「砖没了」——被撞倒的普通砖与碎掉的玻璃砖走同一条路，只算一次。
+   * 表现层（碎屑 / 音效）由调用方负责：两者要放的东西不一样。
+   */
+  private markKnocked(b: Brick) {
+    if (b.knocked) return;
+    b.knocked = true;
+    this.knockedCount++;
+    this.colorKnocked[b.def.color] = (this.colorKnocked[b.def.color] || 0) + 1;
+    if (b.def.target) this.targetsKnocked++;
     const now = performance.now();
+    if (now < this.comboUntil) this.comboCount++;
+    else this.comboCount = 1;
+    this.comboUntil = now + 1600;
+    const bonus = this.comboCount > 1 ? Math.round(b.score * 0.25 * (this.comboCount - 1)) : 0;
+    this.score += b.score + bonus;
+    if (this.comboCount === 5) audio.play('collapse');
+  }
+
+  private checkKnocked() {
     for (const b of this.bricks) {
       if (b.knocked || b.def.static) continue;
       const dist = b.body.position.distanceTo(b.initPos);
@@ -468,16 +554,7 @@ export class Game {
       const cur = b.body.quaternion.vmult(up, new CANNON.Vec3());
       const tilt = Math.acos(Math.max(-1, Math.min(1, cur.dot(up)))) * (180 / Math.PI);
       if (dist > 1.2 || tilt > 38) {
-        b.knocked = true;
-        this.knockedCount++;
-        this.colorKnocked[b.def.color] = (this.colorKnocked[b.def.color] || 0) + 1;
-        if (b.def.target) this.targetsKnocked++;
-        if (now < this.comboUntil) this.comboCount++;
-        else this.comboCount = 1;
-        this.comboUntil = now + 1600;
-        const bonus = this.comboCount > 1 ? Math.round(b.score * 0.25 * (this.comboCount - 1)) : 0;
-        this.score += b.score + bonus;
-        if (this.comboCount === 5) audio.play('collapse');
+        this.markKnocked(b);
         this.spawnParticles(b.mesh.position, PALETTE[b.def.color], 6, 0.8);
       }
     }
@@ -711,6 +788,9 @@ export class Game {
     }
 
     this.world.step(1 / 60, dt, 4);
+    /* 碎裂必须在 step 之后立刻清算：一是求解器已经放手了这些 body，
+       二是后面这段同步循环要按最新的 bricks 列表来跑（碎掉的砖已被摘走）。 */
+    this.drainShatters();
 
     // clamp velocity + sync
     for (const b of this.bricks) {

@@ -127,6 +127,7 @@ export const UI: Record<Lang, UiText> = {
       '🎚️ 用滑杆、滚轮或 Q / E 调节发射力度。',
       '💥 点击鼠标左键（或空格）发射。',
       '🧱 借助物理和连锁反应把建筑砸塌。',
+      '🧊 半透明的玻璃砖一撞就碎，碎掉以后不再承重，上面会整片塌下来。',
       '⌨️ A/D 左右转 · W/S 调仰角 · R 重开 · Esc 暂停',
     ],
     tipsTouch: [
@@ -134,6 +135,7 @@ export const UI: Record<Lang, UiText> = {
       '✋ 手指一松开就发射——瞄准满意了再松手。',
       '🎚️ 先用底部滑杆调好力度，拖动时看轨迹线预判落点。',
       '🧱 借助物理和连锁反应把建筑砸塌。',
+      '🧊 半透明的玻璃砖一撞就碎，碎掉以后不再承重，上面会整片塌下来。',
       '⏸ 右上角可以暂停或重开本关。',
     ],
     start: '开始游戏',
@@ -176,6 +178,7 @@ export const UI: Record<Lang, UiText> = {
       '🎚️ Adjust firing power with the slider, mouse wheel or Q / E.',
       '💥 Click the left mouse button (or Space) to fire.',
       '🧱 Use physics and chain reactions to knock down the structure.',
+      '🧊 Translucent glass bricks shatter on impact and stop supporting anything — whatever is above comes down.',
       '⌨️ A/D rotate · W/S elevate · R restart · Esc pause',
     ],
     tipsTouch: [
@@ -183,6 +186,7 @@ export const UI: Record<Lang, UiText> = {
       '✋ Let go to fire — so release only once the aim looks right.',
       '🎚️ Set the power with the bottom slider; the trajectory line previews the shot.',
       '🧱 Use physics and chain reactions to knock down the structure.',
+      '🧊 Translucent glass bricks shatter on impact and stop supporting anything — whatever is above comes down.',
       '⏸ Pause or restart from the top-right buttons.',
     ],
     start: 'START PLAYING',

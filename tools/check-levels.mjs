@@ -12,6 +12,8 @@
  *   B. 开局空跑（真实 cannon-es，不开炮跑 6 秒）
  *      参数逐条照抄 Game.ts（重力 / 求解器 / 四组接触材质 / 砖块阻尼 / 判定阈值），
  *      任何非零的自倒数都是 bug，不是手感问题。
+ *      玻璃砖（kind: 'glass'）同样复刻：撞击超过 GLASS_BREAK_V 就当场消失。
+ *      ⚠️ 开局就有玻璃砖自己碎掉 = 白送击倒数，与「自倒」同级，一律算不通过。
  *
  * ⚠️ 工具的几何近似：只按 AABB 判重叠，非轴对齐的砖（rotY）会偏保守。
  */
@@ -29,6 +31,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GRAVITY = -19.6;
 const KNOCK_DIST = 1.2;   // 位移阈值
 const KNOCK_TILT = 38;    // 倾角阈值（度）
+const GLASS_BREAK_V = 3.0; // 玻璃碎裂的撞击速度阈值
 const RUN_SECONDS = 6;
 
 /* ---------------- A. 摆放静检 ---------------- */
@@ -130,16 +133,39 @@ function simulate(level) {
     });
     if (def.rotY) body.quaternion.setFromEuler(0, def.rotY, 0);
     world.addBody(body);
-    items.push({ def, body, initPos: body.position.clone() });
+    const it = { def, body, initPos: body.position.clone(), shattered: false, breakQueued: false };
+    // 与 Game.addBrick 的玻璃判定一致：撞击超过阈值就排队等碎裂
+    if (def.kind === 'glass') {
+      body.addEventListener('collide', (e) => {
+        const v = Math.abs(e.contact.getImpactVelocityAlongNormal?.() ?? 0);
+        if (v > GLASS_BREAK_V) it.breakQueued = true;
+      });
+    }
+    items.push(it);
   }
 
   const steps = Math.round(RUN_SECONDS * 60);
-  for (let s = 0; s < steps; s++) world.step(1 / 60, 1 / 60, 4);
+  for (let s = 0; s < steps; s++) {
+    world.step(1 / 60, 1 / 60, 4);
+    // 与 Game.drainShatters 一致：step 之后再清算，摘掉物理体 = 不再提供支撑
+    for (const it of items) {
+      if (!it.breakQueued || it.shattered) continue;
+      it.breakQueued = false;
+      it.shattered = true;
+      world.removeBody(it.body);
+      it.body.position.set(0, -500, 0); // 挪出画面，别再跟地面的碰撞检测纠缠
+    }
+  }
 
   const up = new CANNON.Vec3(0, 1, 0);
   const knocked = [];
+  const shattered = [];
   for (const it of items) {
     if (it.def.static) continue;
+    if (it.shattered) {
+      shattered.push(it);
+      continue;
+    }
     const dist = it.body.position.distanceTo(it.initPos);
     const cur = it.body.quaternion.vmult(up, new CANNON.Vec3());
     const tilt = (Math.acos(Math.max(-1, Math.min(1, cur.dot(up)))) * 180) / Math.PI;
@@ -147,7 +173,7 @@ function simulate(level) {
       knocked.push({ ...it, dist, tilt });
     }
   }
-  return { total: items.filter((b) => !b.def.static).length, knocked };
+  return { total: items.filter((b) => !b.def.static).length, glass: items.filter((b) => b.def.kind === 'glass').length, knocked, shattered };
 }
 
 /* ---------------- 主流程 ---------------- */
@@ -172,16 +198,18 @@ const targets = LEVELS.map((lv, i) => ({ lv, n: i + 1 })).filter((t) => !only.le
 let failed = 0;
 for (const { lv, n } of targets) {
   const lint = lintLayout(lv);
-  const { total, knocked } = simulate(lv);
+  const { total, glass, knocked, shattered } = simulate(lv);
   const objKind = lv.objective.kind;
   const need = lv.objective.count ?? (objKind === 'targets' ? lv.bricks.filter((b) => b.target).length : 0);
-  const autoWin = need > 0 && (objKind === 'knockCount' || objKind === 'color') && knocked.length >= need;
+  // 玻璃碎了在游戏里也算「击倒」（碎掉 = 没了），所以判开局即胜要把两笔一起算
+  const gone = knocked.length + shattered.length;
+  const autoWin = need > 0 && (objKind === 'knockCount' || objKind === 'color') && gone >= need;
 
-  const bad = lint.length > 0 || knocked.length > 0;
+  const bad = lint.length > 0 || knocked.length > 0 || shattered.length > 0;
   if (bad) failed++;
 
   console.log(
-    `\n${bad ? '❌' : '✅'} L${n} 《${lv.name.zh}》 砖数 ${lv.bricks.length}（可击倒 ${total}）` +
+    `\n${bad ? '❌' : '✅'} L${n} 《${lv.name.zh}》 砖数 ${lv.bricks.length}（可击倒 ${total}${glass ? `，玻璃 ${glass}` : ''}）` +
     ` 目标 ${objKind}${need ? ` ${need}` : ''}  弹药 ${lv.ammo}`
   );
 
@@ -204,6 +232,15 @@ for (const { lv, n } of targets) {
     if (knocked.length > 12) console.log(`     · …另有 ${knocked.length - 12} 块`);
   } else {
     console.log(`   空跑 ${RUN_SECONDS}s：自倒 0 块 ✓`);
+  }
+
+  if (shattered.length) {
+    console.log(`   空跑 ${RUN_SECONDS}s：${shattered.length} 块玻璃自碎（撞击阈值被静置抖动触发）${autoWin ? '  ⚠️ 开局即达成目标' : ''}`);
+    for (const s of shattered.slice(0, 12)) {
+      console.log(`     · #${s.def.pos.join(',')} color=${s.def.color} kind=glass`);
+    }
+  } else if (glass) {
+    console.log('   空跑 6s：玻璃自碎 0 块 ✓');
   }
 }
 

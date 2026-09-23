@@ -102,6 +102,9 @@ export default function App() {
   const [sound, setSound] = useState(true);
   const [tutorial, setTutorial] = useState(true);
   const [best, setBest] = useState<Record<number, number>>({});
+  /* 开局提示条：每关的 lv.hint 原先只是躺在关卡数据里、界面上没人用（玩家看不到）。
+     现在做成进关后浮出几秒的提示 —— 新机制（比如玻璃砖）总得有人跟玩家说一句。 */
+  const [hintOn, setHintOn] = useState(true);
   const [lang, setLang] = useLang();
   const s = UI[lang];
   const tips = IS_TOUCH ? s.tipsTouch : s.tips;
@@ -129,6 +132,15 @@ export default function App() {
     if (gameRef.current) gameRef.current.showTraj = traj;
   }, [traj]);
   useEffect(() => audio.setEnabled(sound), [sound]);
+
+  /* 提示条在「换关 / 关掉教程」之后重放一次。依赖只放这两个 ——
+     hud 每帧都在更新（得分、进度），但内容没变时 setHud 会保持同一个对象，
+     所以这里不会跟着每帧重排定时器。 */
+  useEffect(() => {
+    setHintOn(true);
+    const t = setTimeout(() => setHintOn(false), 5200);
+    return () => clearTimeout(t);
+  }, [hud?.level, tutorial]);
 
   useEffect(() => {
     if (hud?.status === 'won') setBest((b) => ({ ...b, [hud.level]: Math.max(b[hud.level] || 0, hud.stars) }));
@@ -186,6 +198,16 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* 开局提示条：一句话点出这一关的关键（哪几块是玻璃、该打哪儿）。
+              放在 15% 高度上，避开顶部卡片；5 秒后自己消失，不长期占屏。 */}
+          {hintOn && hud.status === 'playing' && !paused && (
+            <div className="absolute top-[15%] left-1/2 -translate-x-1/2 w-max max-w-[88vw] sm:max-w-[660px] pointer-events-none">
+              <div className={`${CARD} px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-sm font-bold text-[#3a3129] text-center`}>
+                💡 {resolve(lv.hint, lang)}
+              </div>
+            </div>
+          )}
 
           {/* combo */}
           {hud.combo > 1 && hud.status === 'playing' && (

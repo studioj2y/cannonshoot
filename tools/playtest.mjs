@@ -12,6 +12,10 @@
  * （R = v·cosθ·T，H = v·sinθ·T − ½gT² ⇒ v² = gR² / (2cos²θ(R·tanθ − H))），
  * 再在反解出的初速上下浮动几档，盖住阻尼与近似误差。
  *
+ * ⚠️ 玻璃砖（kind: 'glass'）必须一起复刻：撞击超过 GLASS_BREAK_V 就当场消失、
+ *    不再提供支撑，而且**算一块击倒**。不复刻的话，带玻璃的关卡会被严重低估
+ *    （工具以为那排腿还在撑着，真机上早就没了）。
+ *
  * ⚠️ 为什么不用全盲网格：真实 cannon-es 单步约 1.8ms，一发要跑 ~270 步，
  *    全网格 × 贪心 N 发是 O(网格 × N²) 的算法，跑一关要几十分钟。瞄准解算把
  *    候选从几百个压到几十个，且每个都「有理由」，性价比高一个量级。
@@ -45,6 +49,7 @@ const BALL_R = 0.45;
 const BALL_MASS = 9;
 const BALL_LIFE = 9;         // 炮弹存活秒数
 const MAX_BALLS = 6;         // 同场上限
+const GLASS_BREAK_V = 3.0;   // 玻璃碎裂的撞击速度阈值（同 Game.ts）
 
 /* ---- 命令行 ---- */
 const argv = process.argv.slice(2);
@@ -109,7 +114,14 @@ function makeBricks(level, world, brickMat) {
     });
     if (def.rotY) body.quaternion.setFromEuler(0, def.rotY, 0);
     world.addBody(body);
-    items.push({ def, body, initPos: body.position.clone(), initQuat: body.quaternion.clone() });
+    const it = { def, body, initPos: body.position.clone(), initQuat: body.quaternion.clone(), shattered: false, breakQueued: false };
+    if (def.kind === 'glass') {
+      body.addEventListener('collide', (e) => {
+        const v = Math.abs(e.contact.getImpactVelocityAlongNormal?.() ?? 0);
+        if (v > GLASS_BREAK_V) it.breakQueued = true;
+      });
+    }
+    items.push(it);
   }
   return items;
 }
@@ -124,6 +136,23 @@ function resetBricks(items) {
     it.body.force.setZero();
     it.body.torque.setZero();
     it.body.wakeUp();
+    it.shattered = false;
+    it.breakQueued = false;
+  }
+}
+
+/** 玻璃碎裂的复刻：摘出场景 = 不再提供支撑。
+ *  ⚠️ 这里是把 body 挪到 y = -500 并让它睡过去，而不是 world.removeBody ——
+ *     下一轮 runPlan 还要 resetBricks 把它放回原位，真删掉就复原不了了。 */
+function drainGlass(items) {
+  for (const it of items) {
+    if (!it.breakQueued || it.shattered || it.def.static) continue;
+    it.breakQueued = false;
+    it.shattered = true;
+    it.body.position.set(0, -500, 0);
+    it.body.velocity.setZero();
+    it.body.angularVelocity.setZero();
+    it.body.sleep();
   }
 }
 
@@ -134,7 +163,7 @@ const aimDir = (yaw, pitch) => {
 };
 
 /** 炮弹的 9 秒回收与同场上限都要照抄 Game.ts，否则第 2 发之后的物理跟真机对不上 */
-function stepWorld(world, balls, dt, t) {
+function stepWorld(world, balls, items, dt, t) {
   for (let i = balls.length - 1; i >= 0; i--) {
     if (t - balls[i].born > BALL_LIFE) {
       world.removeBody(balls[i].body);
@@ -142,6 +171,8 @@ function stepWorld(world, balls, dt, t) {
     }
   }
   world.step(dt, dt, 4);
+  // 同 Game.drainShatters：step 之后再清算本帧要碎的玻璃
+  drainGlass(items);
 }
 
 /** 世界静下来了没（用于提前结束一发，省算力）
@@ -152,7 +183,7 @@ function settled(items, balls) {
     if (b.body.sleepState !== CANNON.Body.SLEEPING && b.body.velocity.length() > 0.6) return false;
   }
   for (const it of items) {
-    if (it.def.static) continue;
+    if (it.def.static || it.shattered) continue;
     if (it.body.sleepState !== CANNON.Body.SLEEPING && it.body.velocity.length() > 0.4) return false;
   }
   return true;
@@ -188,6 +219,11 @@ function knockStats(items) {
   const knocked = [];
   for (const it of items) {
     if (it.def.static) continue;
+    // 碎掉的玻璃砖在游戏里也算一块击倒（碎掉 = 没了），必须先判它
+    if (it.shattered) {
+      knocked.push(it);
+      continue;
+    }
     const dist = it.body.position.distanceTo(it.initPos);
     const cur = it.body.quaternion.vmult(UP, new CANNON.Vec3());
     const tilt = (Math.acos(Math.max(-1, Math.min(1, cur.dot(UP)))) * 180) / Math.PI;
@@ -206,14 +242,14 @@ function runPlan(ctx, plan) {
     fire(world, balls, ballMat, shot, t);
     let waited = 0;
     for (let s = 0; s < MAX_WAIT * 60; s++) {
-      stepWorld(world, balls, dt, t);
+      stepWorld(world, balls, items, dt, t);
       t += dt;
       waited += dt;
       if (waited > 0.35 && settled(items, balls)) break;
     }
   }
   for (let s = 0; s < TAIL * 60; s++) {
-    stepWorld(world, balls, dt, t);
+    stepWorld(world, balls, items, dt, t);
     t += dt;
   }
   return knockStats(items);
@@ -309,6 +345,7 @@ for (const { lv, n } of targets) {
   const grid = candidateGrid(lv);
 
   const total = items.filter((i) => !i.def.static).length;
+  const glass = items.filter((i) => i.def.kind === 'glass').length;
   const o = lv.objective;
   const need = o.count ?? (o.kind === 'targets' ? items.filter((i) => i.def.target).length : 0);
 
@@ -350,7 +387,7 @@ for (const { lv, n } of targets) {
   rows.push({ n, name: lv.name.zh, total, need, kind: o.kind, ammo: lv.ammo, bestOne, finalKnocked, curve, cand: grid.length });
 
   console.log(
-    `L${n} 《${lv.name.zh}》 可击倒 ${total} · 目标 ${o.kind} ${need} · 弹药 ${lv.ammo}\n` +
+    `L${n} 《${lv.name.zh}》 可击倒 ${total}${glass ? `（含玻璃 ${glass}）` : ''} · 目标 ${o.kind} ${need} · 弹药 ${lv.ammo}\n` +
     `   一发最好 ${bestOne}/${total}（${((bestOne / total) * 100).toFixed(0)}%）` +
     ` · 占目标 ${need ? ((bestOne / need) * 100).toFixed(0) + '%' : 'n/a'}` +
     ` · 贪心 ${curve.length} 发 ${finalKnocked}/${need}` +

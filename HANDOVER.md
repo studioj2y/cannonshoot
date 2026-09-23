@@ -8,11 +8,11 @@
 
 ## 1. 五分钟上手
 
-代码只有 8 个有效文件、约 2620 行（另有 1 个死代码文件 `src/utils/cn.ts`，从未被引用），外加 `tools/` 下三个验证脚本。**按这个顺序读**：
+代码只有 8 个有效文件、约 2875 行（另有 1 个死代码文件 `src/utils/cn.ts`，从未被引用），外加 `tools/` 下三个验证脚本。**按这个顺序读**：
 
 | 顺序 | 文件 | 读它的目的 |
 |---|---|---|
-| 1 | `src/game/levels.ts` | 先看数据。10 关长什么样、`wall/tower/arch` 三个工厂怎么拼关卡，读完就有大概画面。**顶部的摆砖硬约束注释是全书最该先读的一段** |
+| 1 | `src/game/levels.ts` | 先看数据。10 关长什么样、`wall/tower/arch` 三个工厂怎么拼关卡、砖种（`BrickKind`）与投放选择器（`BrickPick`）怎么用，读完就有大概画面。**顶部的摆砖硬约束注释 + 砖种扩展清单是全书最该先读的两段** |
 | 2 | `src/i18n.ts` | 再看文案。所有界面文字的中英对照、语言状态怎么存、关卡目标文案怎么拼出来 |
 | 3 | `src/App.tsx` | 再看 UI。HUD 有哪些字段、有几个浮层、UI 反向下发调了哪几个方法、窄屏怎么精简 |
 | 4 | `src/game/Game.ts` | 再看引擎。先读 `constructor`（装配）→ `reset()`（初始化）→ `step()`（每帧）→ `finish()`（结算），其余都是细节；**输入在 `// ---------- input ----------` 一节，鼠标与触控都在那里** |
@@ -30,14 +30,15 @@
 
 ## 2. 引擎是怎么组织的
 
-`Game` 是一个「一个类装下整个游戏」的写法（829 行），内部分四块，靠注释分隔：
+`Game` 是一个「一个类装下整个游戏」的写法（919 行），内部分四块，靠注释分隔：
 
 ```
 buildEnvironment()   天空球 / 半球光 / 平行光+阴影 / 云 / 地面 / 远山
 buildCannon()        炮台（球身+底座+轮子+炮管+炮口闪光）→ this.cannon / this.barrel / this.muzzle
 loadLevel(i) → reset()   清场 → 按关卡数据建砖 → 重置状态
 fire()               生成炮弹刚体 + 拖尾 + 枪口特效
-checkKnocked()       每帧扫描砖块，判定是否"被砸倒"并计分
+checkKnocked()       每帧扫描砖块，判定是否"被砸倒"并计分 → markKnocked() 是唯一的计分入口
+queueShatter() / drainShatters()   玻璃砖：碰撞回调里排队 → world.step() 之后统一摘除
 objectiveDone() / objectiveProgress() / evaluate() / finish()   目标与结算
 animate → step(dt) → render()
 ```
@@ -48,6 +49,7 @@ animate → step(dt) → render()
 1. 键盘瞄准（WASD/QE，仅在 status === 'playing' 时生效）
 2. 装填冷却倒计时
 3. world.step(1/60, dt, 4)          ← 物理推进
+3.5 drainShatters()                  ← ⚠️ 必须紧跟 step 之后（见陷阱十）
 4. 砖块：限速 → 同步网格 → y<-30 则 sleep
 5. 炮弹：同步网格 → 更新拖尾 → 判超时/越界回收
 6. 粒子：积分 → 淡出 → 到期回收
@@ -104,8 +106,8 @@ animate → step(dt) → render()
 
 | 对象 | 数组 | 谁的 mesh 挂在哪 | 谁的 body 在哪 | 销毁 |
 |---|---|---|---|---|
-| 砖块 `Brick` | `this.bricks` | `this.levelGroup` | `world` | `reset()` 里逐个 `removeBody` + `remove(levelGroup)` + `dispose(geometry)` |
-| 炮弹 `Ball` | `this.balls` | `this.scene` | `world` | `removeBall(b)`（`world.removeBody` + `scene.remove` mesh/trail + `dispose`） |
+| 砖块 `Brick` | `this.bricks` | `this.levelGroup` | `world` | `reset()` 里逐个 `removeBody` + `remove(levelGroup)`，**不 dispose 几何体/材质**（共享缓存，见陷阱四）。另有**游戏中途**的单块移除：玻璃碎裂走 `drainShatters()` |
+| 炮弹 `Ball` | `this.balls` | `this.scene` | `world` | `removeBall(b)`（`world.removeBody` + `scene.remove` mesh/trail + dispose **独占的**尾迹几何体） |
 | 粒子 / 彩带 | `this.particles` | `this.scene` | 无（纯视觉，不受物理） | 到期回收，或 `reset()` 里整批清 |
 
 ### ⚠️ 陷阱一：`for...of` 遍历数组时不能边遍历边 `splice`
@@ -208,18 +210,71 @@ three.js 的 `IcosahedronGeometry` / `OctahedronGeometry` 每个三角形独占�
 
 判断方法：改完云之后截一张天空的局部放大图（`Page.captureScreenshot` 带 `clip` + `scale`），如果看到明显的黑白刻面对比就是又退回去了。
 
+### ⚠️ 陷阱十：玻璃砖碎裂 —— 必须「排队 + step 后清算」+ 必须从 `bricks` 里摘掉（2026-09-23 加玻璃砖踩到）
+
+玻璃砖（`kind: 'glass'`）的机制看着简单（撞一下就没了），但有**两个各自都能单独搞坏游戏**的坑：
+
+**坑 A：不能在碰撞回调里当场摘除。** `collide` 回调是在 `world.step()` **内部**触发的，此刻求解器还握着这个 body（正在解这个接触对）。当场 `world.removeBody()` 会破坏求解器正在遍历的数组，轻则这一帧结果错乱，重则整个物理世界开始出现穿透、抖动。
+
+正确做法是把要碎的砖**入队**，等 `step()` 返回后再统一清算：
+
+```ts
+// addBrick 的 collide 回调里 —— 只登记，不动世界
+if (isGlass && Math.abs(v) > GLASS_BREAK_V) { this.queueShatter(brick); return; }
+
+// step() 里 —— world.step() 之后、砖块同步之前
+this.world.step(1 / 60, dt, 4);
+this.drainShatters();
+```
+
+`queueShatter()` 里有 `if (brick.shattered) return;` 去重 —— 一帧内可能有多条接触都触发，不去重会重复入队、重复计分。
+
+**坑 B：必须从 `this.bricks` 里 `splice` 掉。** 这是最阴的一条：
+
+```ts
+this.world.removeBody(b.body);        // 砖离开了物理世界
+this.levelGroup.remove(b.mesh);       // 砖离开了画面
+const i = this.bricks.indexOf(b);
+if (i >= 0) this.bricks.splice(i, 1); // ← 漏了这句，关卡永远结算不了
+this.markKnocked(b);                  // 计分（计分入口只有这一个）
+```
+
+漏掉 `splice` 时：这块砖**看起来**已经碎了（没物理体、没网格、有碎屑和音效），但 `allSettled()` 还在遍历 `this.bricks`，会一直看到一个「速度冻结在碎裂那一刻、永远不会归零」的 body。于是 **`stopAll` 永不为真 → 结算浮层永远不出现**，表现为「明明达成目标了，游戏就是不结算」。而且它只在**有玻璃的关卡**（L2/L5/L7/L8/L10）复现，极容易漏测。
+
+**碎屑表现**比照炮弹粒子，但有两处不同：普通粒子用缓存几何体 `icoGeometry(0.12, 0)`，玻璃碎屑用**不能缓存**的 `shardGeometry()` —— 因为每颗粒子的 `fadeMaterial()` 是独占的、要逐颗 dispose，几何体跟着一起走才对称（见陷阱四的例外说明）。
+
+> 工具同步：`GLASS_BREAK_V` 在三个 `tools/` 脚本里各抄了一份，且 `check-levels.mjs` / `playtest.mjs` 都要复刻「排队 + 逐帧清算」。**漏了不会报错**，只是玻璃在复刻里变成永不碎的实心砖，自检照样全绿 —— 这是目前最容易出现「工具与真机不一致」的地方。
+
+---
+
+## 3.5 靶场景别：`FIELD_SHIFT_Z`
+
+关卡数据本体（`DESIGNED_LEVELS`）写的是**设计坐标**，靶场落在 `z ≈ −30` 一带；导出的 `LEVELS` 在末尾统一加 `FIELD_SHIFT_Z`（当前 `6`）：
+
+```ts
+export const LEVELS: LevelDef[] = DESIGNED_LEVELS.map((lv) => ({
+  ...lv,
+  bricks: lv.bricks.map((b) => ({ ...b, pos: [b.pos[0], b.pos[1], b.pos[2] + FIELD_SHIFT_Z] })),
+}));
+```
+
+- **为什么要这么绕**：景别（砖块离炮台多远）是一个**手感参数**，而关卡里的 z 坐标是**布局参数**。混在一起的话，每次调景别都要动几十处数字、还会污染「摆砖底面 = 支撑面」的可读性。分成两层之后，调景别只改一个常数。
+- **只动 z**：`x` / `y` 是承重关系（左右间距、离地高度），动了就会出现悬空/埋入（陷阱六）。
+- ⚠️ **改 `FIELD_SHIFT_Z` 之后必须重跑 `check-levels.mjs` + `playtest.mjs`**，并且同步 `check-levels-live.mjs` 顶部的 `GLASS_SHOTS` 与 `EXPECT`。距离一变，障碍拦截关系、弹道落角、单发覆盖率全都会变 —— 本轮拉近 6m 之后，L6 的单发从 19 涨到 26，而 L9 反而从 28 掉到 17。
+  **「拉近 = 变简单」是错的**：低仰角平射能一路犁过去，对**连成一片**的结构（L6 两塔 + 长板）是大利好；但对**散开的独立承重单元**（L9 两座砦 + 中间廊板 + 挡射线的矮墙）平射带不出连锁，落点高度稍微偏一点就什么都打不着，单发反而更少。
+
 ---
 
 ## 4. 常见改动怎么做
 
 ### 加一关
 
-改 `src/game/levels.ts` 的 `LEVELS` 数组，加一个 `LevelDef`：
+改 `src/game/levels.ts` 的 **`DESIGNED_LEVELS`** 数组（⚠️ **不是导出的 `LEVELS`** —— 那是加完 `FIELD_SHIFT_Z` 位移之后的结果，加关卡要往「设计坐标」那一份里加），加一个 `LevelDef`：
 
 ```ts
 {
   name: { zh: '关卡名', en: 'Level Name' },   // 中英对照，见 i18n.ts 的 LocalizedText
-  hint: { zh: '一句提示', en: 'A hint' },     // ⚠️ 已备好中英文，但当前 UI 没有渲染它（预留字段）
+  hint: { zh: '一句提示', en: 'A hint' },     // 进关后浮出 5.2 秒的提示条（UI 已渲染）；也是告诉玩家「这关有玻璃」的通道，有玻璃的关一定要写
   ammo: 5,
   targetScore: 2000,
   twoStarAmmoLeft: 2,            // 现有 5 关全是 2
@@ -283,6 +338,32 @@ node tools/playtest.mjs                # 约 5~10 分钟
 
 注意 `size` 语义不统一：**box 是完整尺寸 `[w,h,d]`；cylinder 是 `[radius, height, radius]`（第三个被忽略）**。`levels.ts` 里的注释对此也含糊，改动时以 `addBrick()` 的实际读取为准。
 
+### 加一种砖种（`BrickKind`）
+
+砖种（**什么砖**：实心 / 玻璃 / …）与砖形（**什么形状**：方块 / 圆柱 / 宝石）是**两个正交的维度** —— 任意形状都能是玻璃。加砖种要动 5 处，清单也抄在 `levels.ts` 顶部：
+
+| # | 文件 | 改什么 |
+|---|---|---|
+| 1 | `levels.ts` | `BrickKind` 联合类型加一个字面量 |
+| 2 | `art.ts` | 加它的材质工厂（颜色 / 透明 / 高光一律收在这里，**别写进 `Game.ts`**）。照着 `glassMaterial(color, variant)` 抄：走 `matCache`、用 `key = 'glass\|色值\|variant'` 做键 |
+| 3 | `Game.ts` | `addBrick()` 里按 `kind` 选材质；有特殊行为就在 `collide` 回调里加判定。**如果行为会改变物理世界，必须走「排队 + step 后清算」**（陷阱十），不能在回调里当场动 body |
+| 4 | `tools/` | `check-levels.mjs` 与 `playtest.mjs` 都要把新行为补进物理复刻 —— **漏了不报错、只是静默失真** |
+| 5 | `i18n.ts` | 新手引导（`tips` / `tipsTouch`）加一句，玩家得先知道它是什么 |
+
+投放不需要改任何工厂签名：三个工厂末位都有 `pick?: BrickPick = (ctx: {row, col}) => BrickKind \| undefined`，关卡里直接写
+
+```ts
+arch(-7, -26, 3.6, 4.0, 'blue', 2.0, ({ row }) => (row < 2 ? 'glass' : undefined))
+```
+
+⚠️ **三种构件的 `row` / `col` 含义不同**（`wall` 的 col 是层内第几块、`tower` 的 col 是 0/1 双柱 + 2 楼板、`arch` 的 col 是 0/1 两条腿且顶梁的 row = `cols`），投放前照 `levels.ts` 里各工厂的注释对一遍。**`arch` 最容易写错**：`row` 是「第几块柱石」而不是「第几层」，因为拱门只有单排柱石。
+
+材质只在 `addBrick()` 里选一次，所以砖种是**静态属性**，中途不会变（玻璃碎掉是移除，不是「变成实心砖」）。
+
+### 调靶场远近（`FIELD_SHIFT_Z`）
+
+只改 `levels.ts` 末尾的一个常数，见本文「3.5 靶场景别」。改完**必须重跑两个物理工具 + 同步真机回归脚本的两个表**。
+
 ### 改外观 / 加一种环境道具（**先读 `ART_DIRECTION.md`，别跳**）
 
 外观改动**只在 `src/game/art.ts` 里做**，`Game.ts` 只负责把 `art.ts` 的产物挂进场景。
@@ -323,13 +404,15 @@ npm run dev                   # 手动过一遍
 
 难度是否还在同一带里，可选跑 `node tools/playtest.mjs`（较慢，10 关约 25 分钟 —— 真实 cannon-es 单步约 1.8ms）。
 
-改过**选关 / 关卡切换 / HUD 布局**，另有真机回归（需要先起静态服务 + headless Chrome，见脚本头部注释）：
+改过**选关 / 关卡切换 / HUD 布局 / 玻璃砖 / 关卡数值**，另有真机回归（需要先起静态服务 + headless Chrome，见脚本头部注释）：
 
 ```bash
-node tools/check-levels-live.mjs   # 25 项断言：10 个关卡按钮、L6~L10 进得去、开局进度 0/N、窄屏不溢出
+node tools/check-levels-live.mjs   # 42 项断言：全 10 关进得去、开局进度 0/N、玻璃砖能被打碎、选关面板 10 个按钮、窄屏不溢出、运行期无控制台报错
 ```
 
-> ⚠️ 这个脚本里的 `EXPECT` 是从 `levels.ts` 抄的一份期望值（每关的开局进度字符串）。**改关卡目标必须同步它** —— 不匹配会 FAIL，这正是它作为「文档与数据一致」看门狗的价值，不是麻烦。
+> ⚠️ 这个脚本里的 `EXPECT`（每关开局进度字符串）与 `GLASS_SHOTS`（打 L2 玻璃柱的弹道）是从 `levels.ts` 抄的一份期望值。**改关卡目标 / 改 `FIELD_SHIFT_Z` 必须同步它们** —— 不匹配会 FAIL，这正是它作为「文档与数据一致」看门狗的价值，不是麻烦。
+>
+> ⚠️ **断言里绝不能写 `hud.score ?? 0` 这种写法。** 这个脚本的 `js()` 在 CDP 超时或页面抛异常时返回的是**字符串**（`'__TIMEOUT__'` / `'__ERR__ …'`），字符串取 `.score` 得 `undefined`，会被 `?? 0` 静默吞成 0 —— 于是断言以「得分 0 → 0」的形式**假失败**（截图里其实早就 225 分了，2026-09-23 实际踩到）。现在统一走 `numOf()`（只接受真正的数字，否则返回 `null`）+ `whyBad()`（把原因写进详情）。**加新断言时照这个写法抄。**
 >
 > ⚠️ 它和 `check-levels.mjs` 的分工不能互相替代：那个查**物理与摆放**（毫秒级、纯 Node、无需浏览器），这个查**真机 UI 与关卡切换**（分钟级、需要浏览器 + CDP）。改关卡数据后两个都要跑。
 
@@ -350,6 +433,7 @@ node tools/check-levels-live.mjs   # 25 项断言：10 个关卡按钮、L6~L10 
 13. **炮管朝向**：`muzzle.getWorldPosition()` 应落在「炮弹实际飞出去的方向」上；抬到高仰角时炮管朝上而不是朝下（见陷阱八，符号写反过一次）
 14. **美术改动后**（**动过 `art.ts` 就必须跑**）：`renderer.info.render.calls` 与 `triangles` 仍在 `ART_DIRECTION.md` 6.3 的预算内；云**不能被读成漂浮的岩石**（截一张天空的局部放大图看，见陷阱九）；落点标记在压低仰角时可见，关掉「轨迹线」开关应一并消失
 15. **资源所有权**：连开 2~3 炮后按 `R`，再切一关 —— 场景中不应出现「整类物体突然消失 / 渲染异常」（那是共享几何体被误 dispose 的症状，见陷阱四）
+16. **玻璃砖**（**动过玻璃投放或碎裂逻辑就必须跑**）：进 L2，一炮打中塔底玻璃柱 —— 应看到**淡青色半透明柱当场碎成一堆细长碴子**、塔立刻下沉、进度随之上涨；**不能**留下一个半透明方块躺在原地（那是 `splice` 漏了，见陷阱十）。这一关要能**正常弹出结算浮层**（漏 `splice` 时 `allSettled()` 永不为真，会卡在结算前）。再进 L5 / L7 / L8 / L10 确认玻璃位置没串，且**开局静置时玻璃不应自己碎**（自碎 = 白送击倒数）
 
 > ⚠️ 读 `renderer.info.render.calls` 时注意：它**把阴影贴图那一趟也算进来了**（实测占 47%）。要单独测环境占用，先把 `levelGroup` 与 `cannon` 藏起来再读。
 
@@ -363,7 +447,9 @@ node tools/check-levels-live.mjs   # 25 项断言：10 个关卡按钮、L6~L10 
 |---|---|---|
 | 0 | ✅ **相机遮挡 / 关卡初始摆放 / 炮管朝向**（2026-09-23 完成） | 三项一起修完，详见 README「2026-09-23 三处修复」与本文陷阱六 / 七 / 八。**相机与摆砖是本项目最容易反复踩的两处，动之前先读陷阱** |
 | 0.5 | ✅ **美术风格重构为「精致 Low-Poly」**（2026-09-23 完成） | 新增 `src/game/art.ts`（唯一美术出口）+ HUD 同源重做 + 落点标记。规则源与实测数据在 `ART_DIRECTION.md`。剩可选项：真机 GPU 帧时间实测、低端机降级档的真机验证 |
-| 0.6 | ✅ **扩到 10 关**（2026-09-23 完成） | 新增 L6 双塔 / L7 阶梯要塞 / L8 双层柱廊 / L9 双砦 / L10 大教堂。设计原则是「加复杂度、不加难度」：目标占可击倒砖数的比例（47/—/50/48/43%）与老五关（31/—/64/25/59%）同带，弹药随结构数量增长。难度数字见 README「难度曲线」 |
+| 0.6 | ✅ **扩到 10 关**（2026-09-23 完成） | 新增 L6 双塔 / L7 阶梯要塞 / L8 双层柱廊 / L9 双砦 / L10 大教堂。设计原则是「加复杂度、不加难度」：先按「目标占可击倒砖数的比例」落在老五关同带（31% ~ 64%）来定，再用 `playtest.mjs` 校准。**难度数字见 README「难度曲线」—— 那张表的判据后来改过两次，别只看比例列** |
+| 0.7 | ✅ **玻璃砖种 + 靶场拉近**（2026-09-23 完成） | `BrickKind` 加 `'glass'`（撞击即碎、碎后不承重，共 20 块分布在 L2/L5/L7/L8/L10）+ `FIELD_SHIFT_Z = 6` 把靶场整体拉近 6m + 把 `LevelDef.hint` 接进 UI（进关 5.2 秒提示条）+ 数据驱动重配平 L6（目标 14→18）、L9（目标 20→12）。详见本文陷阱十、「3.5 靶场景别」、README「玩法规则 / 难度曲线」 |
+| 0.8 | **再加砖种时照着清单走** | 清单在 `levels.ts` 顶部 + 本文「加一种砖种」一节（5 处：`BrickKind` / `art.ts` 材质工厂 / `Game.ts` 行为与材质选择 / `tools/` 两个复刻 / `i18n.ts` 教程）。**最容易漏的是第 4 条** —— 漏了工具不会报错，只是从此与真机不一致 |
 | 1 | **加一个关卡数据统计脚本**（部分已被 `tools/check-levels.mjs` 覆盖） | 它已经会打印每关的砖数 / 可击倒数 / 目标 / 弹药。还缺的是颜色分布与静态件占比 —— 做 L4 红砖配平时会用到 |
 | 1.5 | ✅ **把开局静置检查留档成脚本**（2026-09-23 完成） | 落在 `tools/check-levels.mjs`，并且**多加了一层几何静检**。本轮加 L9 时正是几何层抓到了物理层漏掉的 0.1m 埋入（埋得浅，6 秒空跑里求解器没顶出足够位移）。另有 `tools/playtest.mjs` 做难度校准 |
 | 2 | **决定 L4 目标** | 场上 5 块红砖、目标要 4 块。改目标数，或改 `wall()` 的上色序列把红剔掉 |
@@ -373,7 +459,7 @@ node tools/check-levels-live.mjs   # 25 项断言：10 个关卡按钮、L6~L10 
 | 6 | **关卡解锁门槛** | 依赖 #4 的持久化数据 |
 | 7 | **判负不要空等 9 秒** | 让 `allSettled()` 对"已静止但尚未超时"的炮弹也放行，或缩短超时 |
 | 8 | **补 `"typecheck": "tsc --noEmit"` 脚本** | 并在 CI（Vercel Build Command 可改成 `npm run typecheck && npm run build`）里接上，避免类型错误悄悄进产物 |
-| 9 | ✅ **文案本地化**（2026-09-23 完成） | 界面默认中文、首页可切中英文、选择持久化。剩下的可选项：把 `LevelDef.hint` 真正渲染出来（关卡开始时的提示条），以及移动端窄屏下中文文案的重排 |
+| 9 | ✅ **文案本地化**（2026-09-23 完成） | 界面默认中文、首页可切中英文、选择持久化。**`LevelDef.hint` 已于 2026-09-23 接进 UI**（进关浮出 5.2 秒的提示条，`App.tsx` 的 `hintOn`）。剩下的可选项：移动端窄屏下中文文案的重排 |
 | 10 | **清死代码** | `src/utils/cn.ts`（从未引用）、`Game.ts` 末尾的 `LEVEL_COUNT`（从未引用）、`Objective` 的 `knockAll`/`score` 分支、`evaluate()` 里 `finish(false)` 前那句无效的 `endTimer += dt`。**`levels.ts` 的 `COLORS` 已于 2026-09-23 删除**（美术重构后色值搬到 `art.ts` 的 `PALETTE`，那一份没人引用了 —— 两份调色板并存迟早会有人改错那一份） |
 
 ---

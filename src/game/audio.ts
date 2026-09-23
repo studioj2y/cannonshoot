@@ -1,4 +1,4 @@
-type Kind = 'fire' | 'load' | 'hit' | 'thud' | 'collapse' | 'win' | 'lose' | 'click';
+type Kind = 'fire' | 'load' | 'hit' | 'thud' | 'collapse' | 'win' | 'lose' | 'click' | 'shatter';
 
 export class AudioManager {
   ctx: AudioContext | null = null;
@@ -40,7 +40,8 @@ export class AudioManager {
     o.stop(t + dur + 0.05);
   }
 
-  private noise(dur: number, vol = 0.4, freq = 900) {
+  /** 噪声爆。type 决定性格：lowpass = 闷响（撞击 / 坍塌），highpass = 脆响（玻璃） */
+  private noise(dur: number, vol = 0.4, freq = 900, type: BiquadFilterType = 'lowpass') {
     if (!this.ctx || !this.master || !this.enabled) return;
     const t = this.ctx.currentTime;
     const len = Math.floor(this.ctx.sampleRate * dur);
@@ -50,7 +51,7 @@ export class AudioManager {
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const f = this.ctx.createBiquadFilter();
-    f.type = 'lowpass';
+    f.type = type;
     f.frequency.value = freq;
     const g = this.ctx.createGain();
     g.gain.value = vol;
@@ -85,6 +86,14 @@ export class AudioManager {
       case 'collapse':
         this.noise(0.8, 0.5, 600);
         this.tone(120, 0.7, 'sawtooth', 0.2, 50);
+        break;
+      /* 玻璃碎裂：高频噪声「哗啦」+ 两三个短促的高音「叮」。
+         ⚠️ 必须是 highpass —— 沿用 lowpass 会听成又一次砖块撞击（'hit'），
+         玩家就分不出「这堵墙被我砸碎了」和「我砸中了一堵墙」。 */
+      case 'shatter':
+        this.noise(0.42, 0.42 * intensity, 2600, 'highpass');
+        this.tone(2100 + Math.random() * 500, 0.16, 'triangle', 0.16 * intensity, 1500);
+        setTimeout(() => this.tone(3200 + Math.random() * 600, 0.1, 'triangle', 0.1 * intensity, 2400), 45);
         break;
       case 'win':
         [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => this.tone(f, 0.25, 'triangle', 0.4), i * 120));

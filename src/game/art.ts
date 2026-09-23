@@ -59,6 +59,9 @@ export const ENV = {
   wood: 0x6b5346,
   ball: 0x40444f,
   gem: 0xcfa9dd,
+  /* 玻璃：砖色朝它混合后得到「带色玻璃」。⚠️ 不要拿它当砖色用 ——
+     砖色组 PALETTE 是 7 个不透明色，玻璃是「材质 + 砖色」的组合，两者不是一回事。 */
+  glass: 0xd6f0f5,
   trail: 0xfff0c4,
   flash: 0xfff3c4,
   landing: 0xfff6dc,
@@ -111,6 +114,38 @@ export function mat(color: number, variant = 0): THREE.MeshPhongMaterial {
     if (variant === 1) c.multiplyScalar(1.06);
     else if (variant === 2) c.multiplyScalar(0.94);
     m = new THREE.MeshPhongMaterial({ color: c, flatShading: true, shininess: 12, specular: 0x1a1a1a });
+    matCache.set(key, m);
+  }
+  return m;
+}
+
+/**
+ * 玻璃砖 —— 与 mat() 同一个家族，但走透明通道。
+ * 做法是「砖色朝 ENV.glass 混一把」（75% 左右），而不是直接换成纯玻璃色：
+ * 纯玻璃色会让整排玻璃砖变成同一个颜色的塑料板，混过之后才是「带色的玻璃」，
+ * 既认得出是哪一色的砖，又一眼看出它不是实心砖。
+ *
+ * ⚠️ 三个参数都不是随便填的：
+ *   · transparent + opacity 0.6 —— 低于 0.5 就开始能看穿整面墙、读不出体量；
+ *   · depthWrite 保持 true —— 关掉它会让玻璃砖的背面透出来，低多边形块会糊成一团；
+ *   · shininess 撑到 130 + 近白高光 —— 玻璃与哑光砖的区别几乎全在这道高光上。
+ */
+export function glassMaterial(color: number, variant = 0): THREE.MeshPhongMaterial {
+  const key = `glass|${color}|${variant}`;
+  let m = matCache.get(key) as THREE.MeshPhongMaterial | undefined;
+  if (!m) {
+    const c = new THREE.Color(color);
+    if (variant === 1) c.multiplyScalar(1.06);
+    else if (variant === 2) c.multiplyScalar(0.94);
+    c.lerp(new THREE.Color(ENV.glass), 0.75);
+    m = new THREE.MeshPhongMaterial({
+      color: c,
+      flatShading: true,
+      transparent: true,
+      opacity: 0.6,
+      shininess: 130,
+      specular: 0xffffff,
+    });
     matCache.set(key, m);
   }
   return m;
@@ -236,6 +271,11 @@ export function icoGeometry(r: number, detail: number): THREE.BufferGeometry {
 /** 六棱 / 八棱柱 —— 拱柱、底座、炮管、轮子全用它，避免出现光滑圆柱 */
 export function prismGeometry(rTop: number, rBottom: number, h: number, sides: number): THREE.BufferGeometry {
   return cachedGeo(`prism|${rTop}|${rBottom}|${h}|${sides}`, () => new THREE.CylinderGeometry(rTop, rBottom, h, sides, 1));
+}
+
+/** 玻璃碎片 —— 三棱柱。碎裂时撒一把，棱角比通用碎屑更「锋利」，一眼看出是玻璃碴 */
+export function shardGeometry(): THREE.BufferGeometry {
+  return prismGeometry(0.055, 0.15, 0.32, 3);
 }
 
 /** 低多边形岩石：二十面体 + 顶点扰动（形状固定，靠非等比缩放拉开差异） */
