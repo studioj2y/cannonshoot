@@ -16,15 +16,10 @@ export interface BrickDef {
 
 export type ColorKey = 'red' | 'yellow' | 'blue' | 'green' | 'purple' | 'orange' | 'gray';
 
-export const COLORS: Record<ColorKey, number> = {
-  red: 0xff5a5f,
-  yellow: 0xffd23f,
-  blue: 0x4cb5f5,
-  green: 0x5bd68a,
-  purple: 0xb07cf0,
-  orange: 0xff9f43,
-  gray: 0xb8c2cc,
-};
+/* ⚠️ 这里曾经有一份 `COLORS: Record<ColorKey, number>`（亮色调色板）。
+   美术重构后色值统一搬到 `art.ts` 的 `PALETTE`（低饱和受限调色板），这份就没人引用了 ——
+   留着是隐患：以后有人往这里加颜色会发现「改了没反应」。
+   改色值请改 `art.ts` 的 `PALETTE`，关卡只写 ColorKey 这类「颜色名」。 */
 
 export interface Objective {
   kind: 'knockCount' | 'knockAll' | 'color' | 'targets' | 'score';
@@ -236,6 +231,155 @@ export const LEVELS: LevelDef[] = [
       { shape: 'box', pos: [-2, 9.0, -30], size: [1.2, 1.0, 1.2], color: 'red', mass: 1.2 },
       { shape: 'box', pos: [2, 9.0, -30], size: [1.2, 1.0, 1.2], color: 'green', mass: 1.2 },
       { shape: 'cylinder', pos: [0, 9.1, -30], size: [0.6, 1.2, 0.6], color: 'purple', mass: 1.1, target: true, score: 400 },
+    ],
+  },
+
+  /* ------------------------------------------------------------------------
+     L6 ~ L10：场景与结构组合逐关变复杂，但**难度基本持平**。
+     把握两条配平原则，别让后五关变成体力活：
+       1. 目标数 ≈ 可击倒砖数的 46% ~ 51%（前五关是 33% ~ 64%，落在同一带里）
+       2. 弹药数随结构数量增长，不做「弹药不变、砖数翻倍」的加难
+     ------------------------------------------------------------------------ */
+  {
+    name: { zh: '双塔', en: 'Twin Towers' },
+    hint: { zh: '两座塔被一块长板连在一起——拆掉一条腿就够了。', en: 'The towers are joined by a plank — take out one leg.' },
+    ammo: 5,
+    /* 目标数由 tools/playtest.mjs 实测反推，不是拍脑袋定的：
+       本关一发最好的成绩是 19 块，目标定 18 时「一发/目标 = 106%」，
+       比老五关里最紧的 L5（137%）还紧 —— 等于玩家必须打出一发近乎完美的球才能一发过关。
+       降到 14 后是 136%，与 L5 持平。targetScore 按同一比例从 2200 降到 1700（保持约 120 分/块）。 */
+    targetScore: 1700,
+    twoStarAmmoLeft: 2,
+    ground: 'grass',
+    objective: { kind: 'knockCount', count: 14 },
+    bricks: [
+      // 平台顶面 = 0.6，两座塔一律从 0.6 起建
+      { shape: 'box', pos: [0, 0.3, -28], size: [20, 0.6, 10], color: 'gray', static: true },
+      // withTarget = false：塔顶面要留给大横板
+      ...tower(-7, -28, 4, 2.0, 0.6, false),
+      ...tower(7, -28, 4, 2.0, 0.6, false),
+      // 大横板：底 6.6 = 塔顶面（0.6 + 4 × 1.5），两端各搭在一条塔顶
+      { shape: 'box', pos: [0, 6.8, -28], size: [15, 0.4, 1.6], color: 'orange', mass: 2.2 },
+      // 板上砖底 = 7.0（横板顶面）
+      { shape: 'box', pos: [-2, 7.5, -28], size: [1.2, 1.0, 1.2], color: 'red', mass: 1.2 },
+      { shape: 'box', pos: [2, 7.5, -28], size: [1.2, 1.0, 1.2], color: 'green', mass: 1.2 },
+      { shape: 'cylinder', pos: [0, 7.6, -28], size: [0.6, 1.2, 0.6], color: 'purple', mass: 1.1, target: true, score: 300 },
+      // 板下的矮墙：底 0.6 = 平台顶面，顶 3.0（离板底还有 3.6，互不接触）
+      ...wall(-2.1, 0.6, -28, 3, 3, 1.4),
+    ],
+  },
+  {
+    name: { zh: '阶梯要塞', en: 'Stepped Fortress' },
+    hint: { zh: '三个高度、三种结构——先从最矮的那个下手。', en: 'Three heights, three structures — start with the lowest.' },
+    ammo: 5,
+    targetScore: 2000,
+    twoStarAmmoLeft: 2,
+    ground: 'grass',
+    objective: { kind: 'targets' },
+    bricks: [
+      // 左台顶面 2.0、右台顶面 3.0，中间那片是草地（y = 0）
+      { shape: 'box', pos: [-7, 1.0, -26], size: [8, 2.0, 7], color: 'gray', static: true },
+      { shape: 'box', pos: [7, 1.5, -26], size: [8, 3.0, 7], color: 'gray', static: true },
+      // 左台：拱门顶梁顶面 = 2.0 + 3.6 + 0.4 = 6.0
+      ...arch(-7, -26, 3.6, 4.0, 'blue', 2.0),
+      { shape: 'box', pos: [-8.6, 6.4, -26], size: [1.2, 0.8, 1.2], color: 'red', mass: 1.1 },
+      { shape: 'box', pos: [-5.4, 6.4, -26], size: [1.2, 0.8, 1.2], color: 'yellow', mass: 1.1 },
+      { shape: 'cylinder', pos: [-7, 6.5, -26], size: [0.55, 1.0, 0.55], color: 'purple', mass: 1.0, target: true, score: 300 },
+      // 右台：三层塔，顶面 = 3.0 + 3 × 1.5 = 7.5，塔顶自带一颗目标（y = 8.0）
+      ...tower(7, -26, 3, 2.0, 3.0),
+      // 中路的矮墙直接立在草地上：底 = 0，顶 = 3.2
+      ...wall(-2.4, 0, -26, 3, 4, 1.4),
+    ],
+  },
+  {
+    name: { zh: '双层柱廊', en: 'Twin-Tier Colonnade' },
+    hint: { zh: '拱门撑着长廊，长廊上还站着两座小拱门。', en: 'Arches carry a gallery — and two smaller arches stand on it.' },
+    ammo: 5,
+    targetScore: 2400,
+    twoStarAmmoLeft: 2,
+    ground: 'sand',
+    objective: { kind: 'knockCount', count: 19 },
+    bricks: [
+      // 平台顶面 0.6；一层拱门（cols = 3）顶梁顶面 = 0.6 + 2.7 + 0.4 = 3.7
+      { shape: 'box', pos: [0, 0.3, -30], size: [20, 0.6, 8], color: 'gray', static: true },
+      ...arch(-7, -30, 2.7, 3.0, 'blue', 0.6),
+      ...arch(0, -30, 2.7, 3.0, 'green', 0.6),
+      ...arch(7, -30, 2.7, 3.0, 'orange', 0.6),
+      // 长廊：底 3.7，同时落在三座拱门的顶梁上（三段支撑，端头各挑出一点也不会倾）
+      { shape: 'box', pos: [0, 3.9, -30], size: [20, 0.4, 1.6], color: 'yellow', mass: 2.2 },
+      // 二层小拱门（cols = 2）：底 4.1 = 长廊顶面，顶梁顶面 = 4.1 + 1.8 + 0.4 = 6.3
+      ...arch(-3.5, -30, 1.8, 2.0, 'red', 4.1),
+      ...arch(3.5, -30, 1.8, 2.0, 'red', 4.1),
+      // 二层顶板：底 6.3，两端搭在两座小拱门的顶梁上
+      { shape: 'box', pos: [0, 6.5, -30], size: [8, 0.4, 1.4], color: 'orange', mass: 1.8 },
+      { shape: 'box', pos: [-2.4, 7.2, -30], size: [1.0, 1.0, 1.0], color: 'red', mass: 1.1 },
+      { shape: 'box', pos: [2.4, 7.2, -30], size: [1.0, 1.0, 1.0], color: 'green', mass: 1.1 },
+      { shape: 'cylinder', pos: [0, 7.2, -30], size: [0.6, 1.0, 0.6], color: 'purple', mass: 1.1, target: true, score: 300 },
+      // 长廊两端各摆一颗目标——正好压在边跨拱门的上方
+      { shape: 'cylinder', pos: [-7, 4.6, -30], size: [0.55, 1.0, 0.55], color: 'purple', mass: 1.0, target: true, score: 300 },
+      { shape: 'cylinder', pos: [7, 4.6, -30], size: [0.55, 1.0, 0.55], color: 'purple', mass: 1.0, target: true, score: 300 },
+    ],
+  },
+  {
+    name: { zh: '双砦', en: 'Twin Keeps' },
+    hint: { zh: '左右各一座要塞，中间还挡着一道矮墙。', en: 'A keep on each flank — with a low wall blocking the middle.' },
+    ammo: 6,
+    /* 同 L6：本关一发最好 28 块，目标定 26 时「一发/目标 = 108%」，比老五关最紧的还紧。
+       降到 20 → 140%，与 L5 持平。targetScore 按同比例从 3200 降（约 125 分/块）。 */
+    targetScore: 2500,
+    twoStarAmmoLeft: 2,
+    ground: 'grass',
+    objective: { kind: 'knockCount', count: 20 },
+    bricks: [
+      { shape: 'box', pos: [0, 0.3, -29], size: [26, 0.6, 9], color: 'gray', static: true },
+      // 两座四层塔（顶面 6.6），塔顶各带一颗目标（y = 6.6 + 0.5）
+      ...tower(-9, -29, 4, 2.0, 0.6),
+      ...tower(9, -29, 4, 2.0, 0.6),
+      // 中间一对拱门：顶梁顶面 = 0.6 + 2.7 + 0.4 = 3.7
+      ...arch(-4.5, -29, 2.7, 3.0, 'blue', 0.6),
+      ...arch(4.5, -29, 2.7, 3.0, 'blue', 0.6),
+      // 廊板：底 3.7，两端各搭在一座拱门的顶梁上；顶面 4.1
+      { shape: 'box', pos: [0, 3.9, -29], size: [11, 0.4, 1.6], color: 'orange', mass: 2.0 },
+      // 板上物件的底面一律 = 4.1（板厚 0.4 ⇒ pos.y = 4.1 + 高度/2）
+      { shape: 'box', pos: [-2, 4.7, -29], size: [1.2, 1.2, 1.2], color: 'red', mass: 1.2 },
+      { shape: 'box', pos: [2, 4.7, -29], size: [1.2, 1.2, 1.2], color: 'green', mass: 1.2 },
+      { shape: 'cylinder', pos: [0, 4.8, -29], size: [0.6, 1.4, 0.6], color: 'purple', mass: 1.1, target: true, score: 300 },
+      // 中路的矮墙：底 0.6 = 平台顶面，顶 3.0 —— 比廊板底低 0.7，互不接触
+      ...wall(-1.8, 0.6, -29, 3, 3, 1.2),
+    ],
+  },
+  {
+    name: { zh: '大教堂', en: 'The Cathedral' },
+    hint: { zh: '一顶大屋顶压着两塔一拱——先找到那根顶梁柱。', en: 'One great roof over two towers and an arch — find the keystone.' },
+    ammo: 6,
+    targetScore: 3800,
+    twoStarAmmoLeft: 2,
+    ground: 'sand',
+    objective: { kind: 'knockCount', count: 28 },
+    bricks: [
+      { shape: 'box', pos: [0, 0.3, -30], size: [26, 0.6, 10], color: 'gray', static: true },
+      // 两座四层塔（顶面 6.6），顶面留给大屋顶
+      ...tower(-10, -30, 4, 2.0, 0.6, false),
+      ...tower(10, -30, 4, 2.0, 0.6, false),
+      // 中央拱门（cols = 6）：顶梁顶面 = 0.6 + 5.4 + 0.4 = 6.4
+      ...arch(0, -30, 5.4, 5.0, 'blue', 0.6),
+      /* 拱心石：把 6.4 垫到 6.6，与两塔顶面齐平。
+         拱门顶面天生到不了 6.6（cols 取整数，只能落在 5.8 / 6.7），
+         所以大屋顶要「三点同时落地」就必须补这一块 —— 少垫 0.2 的话屋顶会先砸在
+         拱顶上、再落到两塔，这一下冲击就足够把关卡开局搅乱。 */
+      { shape: 'box', pos: [0, 6.5, -30], size: [2.4, 0.2, 1.2], color: 'gray', mass: 1.0 },
+      // 大屋顶：底 6.6，三点支撑（左塔 / 拱心石 / 右塔）
+      { shape: 'box', pos: [0, 6.8, -30], size: [22, 0.4, 1.6], color: 'orange', mass: 2.4 },
+      // 屋顶上的小墙：底 7.0 = 屋顶顶面，顶 8.6
+      ...wall(-2.1, 7.0, -30, 3, 2, 1.4),
+      { shape: 'cylinder', pos: [0, 9.1, -30], size: [0.6, 1.0, 0.6], color: 'purple', mass: 1.1, target: true, score: 400 },
+      { shape: 'box', pos: [-5, 7.5, -30], size: [1.2, 1.0, 1.2], color: 'red', mass: 1.2 },
+      { shape: 'box', pos: [5, 7.5, -30], size: [1.2, 1.0, 1.2], color: 'green', mass: 1.2 },
+      // 底层两翼的矮墙（底 0.6，顶 3.0）与墙头砖
+      ...wall(-7.5, 0.6, -30, 2, 3, 1.4),
+      ...wall(4.7, 0.6, -30, 2, 3, 1.4),
+      { shape: 'box', pos: [-6.1, 3.5, -30], size: [1.0, 1.0, 1.0], color: 'yellow', mass: 1.1 },
+      { shape: 'box', pos: [6.1, 3.5, -30], size: [1.0, 1.0, 1.0], color: 'yellow', mass: 1.1 },
     ],
   },
 ];
