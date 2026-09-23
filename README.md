@@ -13,7 +13,7 @@
 ```bash
 npm ci          # 按锁文件安装依赖（102 个包，约 123MB）
 npm run dev     # 开发服务器，默认 http://localhost:5173
-npm run build   # 生产构建 → dist/index.html（单文件，约 875KB / gzip 236KB）
+npm run build   # 生产构建 → dist/index.html（单文件，约 920KB / gzip 252KB）
 npm run preview # 本地预览构建产物
 ```
 
@@ -150,6 +150,7 @@ npx tsc --noEmit
 | 构建 | Vite 7.3.2 + `vite-plugin-singlefile` 2.3.0（内联 JS/CSS → 单 HTML） |
 | 样式 | Tailwind CSS 4.1.17（`@tailwindcss/vite`，`src/index.css` 只有一行 `@import "tailwindcss"`） |
 | 渲染 | three 0.186（WebGL，无外部模型/贴图素材，全部程序化几何体） |
+| 美术 | 自建 `src/game/art.ts`：受限调色板 + 唯一材质工厂 + 程序化几何/贴图 + InstancedMesh 环境。方向单见 `ART_DIRECTION.md` |
 | 物理 | cannon-es 0.20（`SAPBroadphase` + `GSSolver`，迭代 12 次） |
 | 音频 | 原生 WebAudio 振荡器合成，见 `audio.ts` |
 | 多语言 | 零依赖，自己写的 `i18n.ts`（未引入 i18next 等库） |
@@ -161,12 +162,13 @@ npx tsc --noEmit
 ```
 src/
 ├── main.tsx              (10)   React 入口
-├── App.tsx              (350)   UI 层：HUD、教程/暂停/胜负浮层、力度滑杆、开关、语言切换、瞄准态反馈
+├── App.tsx              (367)   UI 层：HUD、教程/暂停/胜负浮层、力度滑杆、开关、语言切换、瞄准态反馈
 ├── i18n.ts              (257)   界面文案总表（中英对照）+ 语言状态 + 关卡目标文案拼装
 ├── index.css             (13)   Tailwind 入口 + 页面级约束（禁滚动/下拉刷新/iOS 字号放大）
 ├── game/
-│   ├── Game.ts          (829)   引擎：渲染 / 物理 / 输入（鼠标 + 触控）/ 判定计分 / 主循环
+│   ├── Game.ts          (839)   引擎：渲染 / 物理 / 输入（鼠标 + 触控）/ 判定计分 / 主循环
 │   ├── levels.ts        (241)   5 关数据（中英对照）+ wall/tower/arch 构件工厂 + 摆砖硬约束说明
+│   ├── art.ts           (650)   美术系统：受限调色板 / 材质工厂 / 程序化几何 / 地面贴图 / 环境组装
 │   └── audio.ts         (102)   9 种合成音效（开炮/装填/命中/闷响/坍塌/胜/负/点击）
 └── utils/
     └── cn.ts              (6)   clsx + tailwind-merge 工具 —— ⚠️ 全项目从未引用，脚手架残留
@@ -203,6 +205,11 @@ src/
 | 粒子上限 | 220（胜利彩带 90 片走独立通道，不占此额度） | `Game.ts` |
 | 主音量 | 0.35 | `audio.ts` |
 | 语言存储键 | `cbc:lang`（默认 `zh`） | `i18n.ts` |
+| 调色板 / 环境色 | `PALETTE`（7 色砖色组）/ `ENV`（环境色） | `art.ts` |
+| 材质工厂 | `mat(color, variant)` 三档明度变体（±6%）；`unlit()` / `trailMaterial()` / `cloudMaterial()` 共用同一缓存池 | `art.ts` |
+| 环境实例数（桌面 / 手机） | 云 28 / 20 · 远山 30 · 树干树冠各 26 / 12 · 岩石 28 / 14 · 草丛 276 / 138 | `art.ts` |
+| 雾 | 近 60 / 远 220，色 = `ENV.skyHorizon` | `Game.ts` |
+| 美术方向单 | `ART_DIRECTION.md`（调色板、几何规格、性能预算、禁例） | 仓库根目录 |
 
 ---
 
@@ -269,6 +276,7 @@ Vercel 项目 → Settings → Domains 添加即可。若要绑国内备案域�
 
 ### 已完成
 
+- **美术风格重构为「精致 Low-Poly」**（2026-09-23）：新增 `src/game/art.ts`（650 行）作为唯一美术出口 —— 受限调色板（7 色砖色组 + 环境色）、统一材质工厂 `mat()` / `unlit()`（带缓存）、程序化几何（倒角砖 / 八面体宝石 / 八棱柱 / 二十面体）、canvas 程序化地面斑块贴图、InstancedMesh 环境（云 / 远山 / 树 / 岩石 / 草丛，**整个环境只占 12 次绘制**）。顺带把 HUD 重做为与场景同源的暖色纸模风（奶油底 + 深棕描边 + 实心底部投影，替换原来的模糊阴影白卡片），并新增**落点标记**（预测弹道的落点圆盘）。方向单与实测数据见 `ART_DIRECTION.md`。
 - **相机遮挡 + 关卡初始摆放 + 炮管朝向**（2026-09-23 修复，三项一起）：详见下节「2026-09-23 三处修复」。
 - **手机触控瞄准**（2026-09-23）：输入层由 `mousemove` / `mousedown` 换成 **Pointer Events**，按 `pointerType` 分流 —— 鼠标保持原来的「绝对位置跟随 + 点击即发射」，触控则是「**按住拖动旋转视角 + 松手发射**」。配套处理了：`touch-action:none`（否则拖动会被浏览器当成滚动）、`setPointerCapture`（手指滑出画面再松手也能收到事件）、多指只认第一根、`pointercancel`（来电 / 系统手势）不发射、装填冷却期内按住不进瞄准态。UI 加入瞄准态反馈（准星放大变黄 + 「瞄准中 · 松手发射」）与窄屏响应式布局、触屏专属操作说明。
 - **中英双语界面 + 语言切换**（2026-09-23）：新增 `src/i18n.ts`，默认中文，首页与暂停面板各有切换按钮，选择持久化到 `localStorage['cbc:lang']`。同时把界面文案从引擎里剥离（`HudState` 不再含 `levelName` / `objective`），`levels.ts` 的 `Objective.text` 改为按数值派生。
@@ -330,7 +338,8 @@ Vercel 项目 → Settings → Domains 添加即可。若要绑国内备案域�
 - **弹药耗尽后最长空等约 9 秒**：判负要等 `allSettled()`，而炮弹要 9 秒才超时回收，最后一炮落地后如果它停在界内，会等满 9 秒才弹结算面板。
 - **失焦时按键卡住**：`keydown` / `keyup` 没有 `blur` 兜底，按住 `W` 时切走窗口，炮台会一直转。
 - **无 `ResizeObserver`**：只有 `window.resize` 监听，拖动 DevTools 停靠导致容器变小、而窗口尺寸没变时，canvas 不会跟着缩放。
-- **材质未 dispose（影响可忽略）**：`reset()` 里砖块与粒子只 `dispose()` 了 geometry，没释放 material。但同配置材质复用同一个 shader program，实测不构成有意义的显存增长，属吹毛求疵级。
+- **⚠️ 资源所有权（2026-09-23 美术重构后已反转，理解反了会出大问题）**：现在 `art.ts` 的几何体与材质**全部带缓存、被多个对象共享**，所以 `reset()` / `removeBall()` **绝不能** dispose 它们 —— 那会把别处正在用的同一份资源释放掉，症状是整场物体消失、渲染异常，**而且不报错**。共享资源统一在 `disposeArt()` 收口；**唯一例外**是每颗粒子独占的材质（`fadeMaterial()`）和每颗炮弹独占的尾迹几何体。详见 `HANDOVER.md` 陷阱四。
+- **装饰物没有物理体**：树 / 岩石 / 草丛只是视觉道具，炮弹会直接穿过去。它们已被限制在射击走廊之外布点（`|x| > 24` 或 `z < -40`），正常情况下打不到，只有擦到边界时看起来会像穿模。
 - **`src/utils/cn.ts` 是死代码**：脚手架残留，从未被 import。
 - **两处无用分支**：`Objective.kind` 的 `knockAll` / `score` 无关卡使用（`i18n.ts` 已给它们备好中英文模板）；`evaluate()` 里 `finish(false)` 之前那句 `this.endTimer += dt` 是死代码。
 - **`reset()` 里清粒子的循环同样建议改成迭代副本**（当前不 splice 所以没有 bug，但写法上是个陷阱）。

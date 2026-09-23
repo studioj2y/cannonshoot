@@ -1,7 +1,23 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { audio } from './audio';
-import { COLORS, LEVELS, type BrickDef, type LevelDef, type ColorKey } from './levels';
+import { LEVELS, type BrickDef, type LevelDef } from './levels';
+import {
+  ENV,
+  PALETTE,
+  mat,
+  unlit,
+  fadeMaterial,
+  trailMaterial,
+  flashMaterial,
+  brickGeometry,
+  gemGeometry,
+  icoGeometry,
+  prismGeometry,
+  buildScenery,
+  disposeArt,
+  type Scenery,
+} from './art';
 
 export interface HudState {
   level: number;
@@ -74,6 +90,7 @@ export class Game {
   cannon = new THREE.Group();
   barrel = new THREE.Group();
   trajLine: THREE.Line;
+  landingMark!: THREE.Mesh;
   particles: { mesh: THREE.Mesh; vel: THREE.Vector3; life: number; max: number; spin: THREE.Vector3 }[] = [];
 
   yaw = 0; // degrees
@@ -106,6 +123,7 @@ export class Game {
   onHud: (s: HudState) => void = () => {};
   private raf = 0;
   private disposed = false;
+  private scenery!: Scenery;
   private groundMat: CANNON.Material;
   private brickMat: CANNON.Material;
   private ballMat: CANNON.Material;
@@ -120,7 +138,8 @@ export class Game {
     container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 500);
-    this.scene.fog = new THREE.Fog(0xbfe9ff, 60, 220);
+    // 雾色直接取天空地平线色：两者不同值会在地平线留下一道可见接缝
+    this.scene.fog = new THREE.Fog(ENV.skyHorizon, 60, 220);
 
     this.world = new CANNON.World({ gravity: new CANNON.Vec3(0, GRAVITY, 0) });
     this.world.broadphase = new CANNON.SAPBroadphase(this.world);
@@ -141,8 +160,14 @@ export class Game {
     this.scene.add(this.levelGroup);
 
     const geo = new THREE.BufferGeometry().setFromPoints(new Array(40).fill(0).map(() => new THREE.Vector3()));
-    this.trajLine = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.5, gapSize: 0.35, transparent: true, opacity: 0.85 }));
+    this.trajLine = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: ENV.trail, dashSize: 0.5, gapSize: 0.35, transparent: true, opacity: 0.9 }));
     this.scene.add(this.trajLine);
+
+    /* 落点标记：预测轨迹的终点画一个扁八棱盘。虚线本身只有 1px 宽，在手机上几乎看不见，
+       加一个「靶心」才能一眼读出炮口对准了哪里。 */
+    this.landingMark = new THREE.Mesh(prismGeometry(0.85, 0.85, 0.06, 8), unlit(ENV.landing, 0.6));
+    this.landingMark.visible = false;
+    this.scene.add(this.landingMark);
 
     window.addEventListener('resize', this.onResize);
     // 统一走 Pointer Events：鼠标是「绝对位置跟随 + 点击即发射」，
@@ -164,89 +189,60 @@ export class Game {
 
   // ---------- environment ----------
   private buildEnvironment() {
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(300, 24, 16),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        uniforms: { top: { value: new THREE.Color(0x3fa9f5) }, bottom: { value: new THREE.Color(0xd9f3ff) } },
-        vertexShader: 'varying float h; void main(){ h = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);} ',
-        fragmentShader: 'uniform vec3 top; uniform vec3 bottom; varying float h; void main(){ gl_FragColor = vec4(mix(bottom, top, clamp(h*1.2+0.15,0.0,1.0)), 1.0);} ',
-      })
-    );
-    this.scene.add(sky);
+    // 天空 / 光照 / 地面 / 云 / 远山 / 树 / 岩石 / 草丛全部由 art.ts 组装，
+    // 除天空与地面外都走 InstancedMesh（整个环境约 10 次绘制调用）。
+    this.scenery = buildScenery(this.scene);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x88bb66, 0.85);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.5);
-    sun.position.set(20, 40, 10);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    const c = sun.shadow.camera as THREE.OrthographicCamera;
-    c.left = -45; c.right = 45; c.top = 45; c.bottom = -45; c.near = 1; c.far = 120;
-    this.scene.add(sun);
-
-    // clouds
-    const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    for (let i = 0; i < 14; i++) {
-      const g = new THREE.Group();
-      for (let j = 0; j < 4; j++) {
-        const s = new THREE.Mesh(new THREE.SphereGeometry(2 + Math.random() * 2.5, 10, 8), cloudMat);
-        s.position.set((Math.random() - 0.5) * 7, Math.random() * 1.5, (Math.random() - 0.5) * 4);
-        g.add(s);
-      }
-      g.position.set((Math.random() - 0.5) * 180, 25 + Math.random() * 20, -Math.random() * 160 - 20);
-      this.scene.add(g);
-    }
-
-    // ground
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ color: 0x6fd36f }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    ground.name = 'ground';
-    this.scene.add(ground);
-    (this as any).groundMesh = ground;
-
+    // 地面物理面仍在引擎里建：美术只管画，物理只管挡，两边互不知道对方
     const gBody = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: this.groundMat });
     gBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
     this.world.addBody(gBody);
-
-    // decorative hills
-    const hillMat = new THREE.MeshLambertMaterial({ color: 0x57c25a });
-    for (let i = 0; i < 10; i++) {
-      const h = new THREE.Mesh(new THREE.SphereGeometry(8 + Math.random() * 10, 12, 8), hillMat);
-      h.position.set((Math.random() - 0.5) * 200, -2, -60 - Math.random() * 90);
-      h.scale.y = 0.5;
-      this.scene.add(h);
-    }
   }
 
   private buildCannon() {
-    const body = new THREE.Mesh(new THREE.SphereGeometry(1.1, 20, 16), new THREE.MeshPhongMaterial({ color: 0xff6b6b, shininess: 60 }));
-    body.scale.set(1.2, 0.9, 1.2);
-    body.castShadow = true;
-    this.cannon.add(body);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.7, 0.6, 20), new THREE.MeshPhongMaterial({ color: 0x4cb5f5, shininess: 50 }));
-    base.position.y = -0.8;
+    /* 低多边形炮台：与场景同源的刻面几何体（无光滑圆柱）+ 受限调色板。
+       ⚠️ cannon.position.y 与 muzzle.position.z 是弹道基准，改这两个数字会让
+       所有关卡的落点整体偏移、调好的关卡配平失效。造型可以换，这两处不能动。 */
+    const base = new THREE.Mesh(prismGeometry(1.5, 1.8, 0.65, 8), mat(PALETTE.blue));
+    base.position.y = -0.85;
     base.castShadow = true;
+    base.receiveShadow = true;
     this.cannon.add(base);
+
+    const hull = new THREE.Mesh(icoGeometry(1.15, 1), mat(PALETTE.orange));
+    hull.scale.set(1.2, 0.9, 1.2);
+    hull.castShadow = true;
+    this.cannon.add(hull);
+
     for (const s of [-1, 1]) {
-      const w = new THREE.Mesh(new THREE.TorusGeometry(0.65, 0.22, 10, 20), new THREE.MeshPhongMaterial({ color: 0xffd23f }));
-      w.position.set(s * 1.4, -0.7, 0);
-      w.rotation.y = Math.PI / 2;
-      this.cannon.add(w);
+      const wheel = new THREE.Mesh(prismGeometry(0.7, 0.7, 0.26, 8), mat(ENV.brass));
+      wheel.position.set(s * 1.42, -0.72, 0);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.castShadow = true;
+      this.cannon.add(wheel);
+
+      const hub = new THREE.Mesh(prismGeometry(0.2, 0.2, 0.34, 6), mat(ENV.wood));
+      hub.position.copy(wheel.position);
+      hub.rotation.z = Math.PI / 2;
+      this.cannon.add(hub);
     }
-    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.6, 3.2, 20), new THREE.MeshPhongMaterial({ color: 0x8e7cf0, shininess: 80 }));
+
+    // 炮管：rTop 在 +y 端、经 rotation.x = -90° 后指向 -z，所以炮口那端取更小的半径
+    const tube = new THREE.Mesh(prismGeometry(0.46, 0.6, 3.2, 8), mat(PALETTE.purple));
     tube.rotation.x = -Math.PI / 2;
     tube.position.z = -1.6;
     tube.castShadow = true;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.12, 8, 20), new THREE.MeshPhongMaterial({ color: 0xffd23f }));
-    ring.position.z = -3.1;
-    this.barrel.add(tube, ring);
+    const band = new THREE.Mesh(prismGeometry(0.54, 0.54, 0.26, 8), mat(ENV.brass));
+    band.rotation.x = -Math.PI / 2;
+    band.position.z = -3.05;
+    band.castShadow = true;
+    this.barrel.add(tube, band);
     this.cannon.add(this.barrel);
     this.cannon.position.set(0, 1.6, 0);
     this.scene.add(this.cannon);
 
-    this.muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 10), new THREE.MeshBasicMaterial({ color: 0xfff3a0, transparent: true, opacity: 0 }));
+    // 炮口闪光：材质每帧单独改 opacity，必须独占（flashMaterial 不走缓存）
+    this.muzzle = new THREE.Mesh(icoGeometry(0.9, 1), flashMaterial());
     this.muzzle.position.z = -3.4;
     this.barrel.add(this.muzzle);
   }
@@ -264,7 +260,7 @@ export class Game {
     for (const b of this.bricks) {
       this.world.removeBody(b.body);
       this.levelGroup.remove(b.mesh);
-      b.mesh.geometry.dispose();
+      // 同 removeBall：几何体与材质都是 art.ts 的共享缓存，不能在这里释放
     }
     this.bricks = [];
     // 必须迭代副本：removeBall 内部会 splice(this.balls)，
@@ -272,11 +268,11 @@ export class Game {
     // 也留在场景中（网格不再同步，变成冻结的黑球继续碰撞）。
     for (const b of [...this.balls]) this.removeBall(b);
     this.balls = [];
-    for (const p of this.particles) { this.scene.remove(p.mesh); p.mesh.geometry.dispose(); }
+    // 几何体共享，只释放粒子独占的材质
+    for (const p of this.particles) { this.scene.remove(p.mesh); (p.mesh.material as THREE.Material).dispose(); }
     this.particles = [];
 
-    const gm = (this as any).groundMesh as THREE.Mesh;
-    (gm.material as THREE.MeshLambertMaterial).color.set(this.level.ground === 'sand' ? 0xf2d9a0 : 0x6fd36f);
+    this.scenery.setGround(this.level.ground); // 换斑块贴图 + 草叶返青 / 变干
 
     this.ammo = this.level.ammo;
     this.score = 0;
@@ -300,20 +296,25 @@ export class Game {
   }
 
   private addBrick(def: BrickDef) {
-    const color = COLORS[def.color as ColorKey];
-    const mat = new THREE.MeshPhongMaterial({ color, shininess: 70, specular: 0x333333 });
+    const color = PALETTE[def.color];
+    /* 手作差异：按坐标算一个确定性档位（0/1/2 → 明度 ±6%），成排的砖才不像复制粘贴。
+       ⚠️ 必须确定性 —— 换成随机数的话，同一块砖每次 reset() 换关卡颜色都会变。 */
+    const variant = Math.abs(Math.round((def.pos[0] + def.pos[1] * 7 + def.pos[2] * 13) * 3)) % 3;
     let geo: THREE.BufferGeometry;
     let shape: CANNON.Shape;
+    let material: THREE.Material;
     if (def.shape === 'cylinder') {
       const [r, h] = def.size;
-      geo = new THREE.CylinderGeometry(r, r, h, 16);
+      geo = gemGeometry(r, h); // 目标宝石：八面体，剪影在小屏上也认得出
       shape = new CANNON.Cylinder(r, r, h, 12);
+      material = def.target ? unlit(ENV.gem) : mat(color, variant);
     } else {
       const [w, h, d] = def.size;
-      geo = new THREE.BoxGeometry(w, h, d, 1, 1, 1);
+      geo = brickGeometry(w, h, d); // 倒角砖：相邻砖之间自然形成一道暗勾缝
       shape = new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2));
+      material = mat(color, variant);
     }
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.position.set(...def.pos);
@@ -375,7 +376,7 @@ export class Game {
     const dir = this.aimDir;
     const start = this.muzzleWorld.clone().add(dir.clone().multiplyScalar(0.6));
     const r = 0.45;
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshPhongMaterial({ color: 0x2b2b3d, shininess: 90, specular: 0xaaaaaa }));
+    const mesh = new THREE.Mesh(icoGeometry(r, 1), mat(ENV.ball));
     mesh.castShadow = true;
     this.scene.add(mesh);
     const body = new CANNON.Body({
@@ -399,7 +400,7 @@ export class Game {
     this.world.addBody(body);
 
     const tGeo = new THREE.BufferGeometry().setFromPoints(new Array(24).fill(0).map(() => start.clone()));
-    const trail = new THREE.Points(tGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.22, transparent: true, opacity: 0.6 }));
+    const trail = new THREE.Points(tGeo, trailMaterial());
     this.scene.add(trail);
 
     this.balls.push({ mesh, body, born: performance.now(), trail, trailPts: new Array(24).fill(0).map(() => start.clone()) });
@@ -415,7 +416,9 @@ export class Game {
     this.world.removeBody(b.body);
     this.scene.remove(b.mesh);
     this.scene.remove(b.trail);
-    b.mesh.geometry.dispose();
+    /* ⚠️ 不要释放 b.mesh.geometry —— 艺术几何体是 art.ts 的共享缓存，在这里单方面
+       dispose 会把其它炮弹与砖块正在用的同一份几何体一起弄坏（表现为整场物体消失）。
+       统一在 disposeArt() 收口。尾迹几何体是每颗炮弹独占的，必须释放。 */
     b.trail.geometry.dispose();
     const i = this.balls.indexOf(b);
     if (i >= 0) this.balls.splice(i, 1);
@@ -424,7 +427,8 @@ export class Game {
   private spawnParticles(pos: THREE.Vector3 | CANNON.Vec3, color: number, n: number, power = 1) {
     if (this.particles.length > 220) return;
     for (let i = 0; i < n; i++) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), new THREE.MeshBasicMaterial({ color }));
+      // 材质必须独占（逐颗淡出），几何体走共享缓存
+      const m = new THREE.Mesh(icoGeometry(0.12, 0), fadeMaterial(color));
       m.position.set(pos.x, pos.y, pos.z);
       this.scene.add(m);
       this.particles.push({
@@ -438,10 +442,10 @@ export class Game {
   }
 
   private spawnConfetti() {
-    const cols = [0xff5a5f, 0xffd23f, 0x4cb5f5, 0x5bd68a, 0xb07cf0, 0xff9f43];
+    const cols = [PALETTE.red, PALETTE.yellow, PALETTE.blue, PALETTE.green, PALETTE.purple, PALETTE.orange];
     const base = this.camera.position.clone().add(this.aimDir.clone().multiplyScalar(14));
     for (let i = 0; i < 90; i++) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.05), new THREE.MeshBasicMaterial({ color: cols[i % 6], side: THREE.DoubleSide }));
+      const m = new THREE.Mesh(brickGeometry(0.32, 0.32, 0.05), fadeMaterial(cols[i % 6]));
       m.position.set(base.x + (Math.random() - 0.5) * 24, base.y + 12 + Math.random() * 8, base.z + (Math.random() - 0.5) * 10);
       this.scene.add(m);
       this.particles.push({
@@ -474,7 +478,7 @@ export class Game {
         const bonus = this.comboCount > 1 ? Math.round(b.score * 0.25 * (this.comboCount - 1)) : 0;
         this.score += b.score + bonus;
         if (this.comboCount === 5) audio.play('collapse');
-        this.spawnParticles(b.mesh.position, COLORS[b.def.color as ColorKey], 6, 0.8);
+        this.spawnParticles(b.mesh.position, PALETTE[b.def.color], 6, 0.8);
       }
     }
   }
@@ -661,8 +665,10 @@ export class Game {
 
   // ---------- loop ----------
   private updateTrajectory() {
-    this.trajLine.visible = this.showTraj && this.status === 'playing' && !this.paused;
-    if (!this.trajLine.visible) return;
+    const on = this.showTraj && this.status === 'playing' && !this.paused;
+    this.trajLine.visible = on;
+    this.landingMark.visible = on;
+    if (!on) return;
     const pts: THREE.Vector3[] = [];
     const p = this.muzzleWorld.clone();
     const v = this.aimDir.clone().multiplyScalar(this.power);
@@ -675,6 +681,9 @@ export class Game {
     }
     this.trajLine.geometry.setFromPoints(pts);
     this.trajLine.computeLineDistances();
+    // 落点标记贴在预测终点；y 钳到地面之上，否则与地面共面会 z-fighting 闪烁
+    const last = pts[pts.length - 1];
+    this.landingMark.position.set(last.x, Math.max(0.06, last.y), last.z);
   }
 
   private animate = () => {
@@ -738,7 +747,7 @@ export class Game {
       (p.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - p.life / p.max);
       if (p.life > p.max) {
         this.scene.remove(p.mesh);
-        p.mesh.geometry.dispose();
+        // 几何体共享（art.ts 缓存），只释放粒子独占的材质
         (p.mesh.material as THREE.Material).dispose();
         this.particles.splice(i, 1);
       }
@@ -821,6 +830,7 @@ export class Game {
     el.removeEventListener('pointercancel', this.onPointerCancel);
     el.removeEventListener('contextmenu', this.onContextMenu);
     el.removeEventListener('wheel', this.onWheel);
+    disposeArt(); // 收口 art.ts 的共享材质 / 几何体 / 贴图缓存
     this.renderer.dispose();
     this.container.innerHTML = '';
   }

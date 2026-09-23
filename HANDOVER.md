@@ -8,15 +8,18 @@
 
 ## 1. 五分钟上手
 
-代码只有 8 个文件、约 1800 行。**按这个顺序读**：
+代码只有 9 个有效文件、约 2480 行（另有 1 个死代码文件 `src/utils/cn.ts`，从未被引用）。**按这个顺序读**：
 
 | 顺序 | 文件 | 读它的目的 |
 |---|---|---|
 | 1 | `src/game/levels.ts` | 先看数据。5 关长什么样、`wall/tower/arch` 三个工厂怎么拼关卡，读完就有大概画面 |
 | 2 | `src/i18n.ts` | 再看文案。所有界面文字的中英对照、语言状态怎么存、关卡目标文案怎么拼出来 |
 | 3 | `src/App.tsx` | 再看 UI。HUD 有哪些字段、有几个浮层、UI 反向下发调了哪几个方法、窄屏怎么精简 |
-| 4 | `src/game/Game.ts` | 最后看引擎。先读 `constructor`（装配）→ `reset()`（初始化）→ `step()`（每帧）→ `finish()`（结算），其余都是细节；**输入在 `// ---------- input ----------` 一节，鼠标与触控都在那里** |
-| 5 | `src/game/audio.ts` | 独立小模块，10 分钟看完，不用记 |
+| 4 | `src/game/Game.ts` | 再看引擎。先读 `constructor`（装配）→ `reset()`（初始化）→ `step()`（每帧）→ `finish()`（结算），其余都是细节；**输入在 `// ---------- input ----------` 一节，鼠标与触控都在那里** |
+| 5 | `src/game/art.ts` | 再看美术。**唯一材质工厂**（`mat()` / `unlit()` 缓存）+ 全部程序化几何 + 程序化地面贴图 + 环境组装 + `disposeArt()` 收口。改外观基本只动这个文件 |
+| 6 | `src/game/audio.ts` | 独立小模块，10 分钟看完，不用记 |
+
+美术的规则源是仓库根目录的 **`ART_DIRECTION.md`**（调色板、几何规格、性能预算、禁例）。**改外观前先读它**，改完在它的「验收」表里补证据 —— 那份文档是交付物的一部分，不是草稿。
 
 没有测试、没有构建脚本之外的工程化设施。想验证就 `tsc --noEmit` + 手动跑。
 
@@ -133,9 +136,15 @@ for (const p of this.particles) { this.scene.remove(p.mesh); p.mesh.geometry.dis
 - 往 `HudState` 里加字段时，**不要加每帧都在变的浮点数**（比如 `body.position.x`），否则会退化成每帧触发 React 重渲染。
 - `combo` 字段目前是 `performance.now() < comboUntil ? comboCount : 0`，值在连击窗口内稳定，没问题。
 
-### ⚠️ 陷阱四：`groundMesh` 是塞在 `this` 上的非声明字段
+### ⚠️ 陷阱四：`art.ts` 的资源是**共享**的，别在外层 dispose（2026-09-23 美术重构后）
 
-`buildEnvironment()` 里用 `(this as any).groundMesh = ground` 存，`reset()` 里再取出来改颜色（草地/沙地）。这是绕过类型检查的写法，IDE 找不到引用。要清理的话建议正规声明成一个 `private groundMesh!: THREE.Mesh`。
+原来那个 `(this as any).groundMesh` 临时字段已经清掉，改成 `buildScenery()` 返回的 `Scenery` 句柄（`this.scenery.setGround(kind)`）。换来的新坑是**资源所有权**：
+
+`art.ts` 的 `mat()` / `unlit()` / `brickGeometry()` / `gemGeometry()` / `icoGeometry()` / `prismGeometry()` / `groundTexture()` **全部带缓存**。也就是说 24 块同色同尺寸的砖共享同一份 geometry 与 material，炮弹和砖块也可能命中同一个 `mat()` 条目。
+
+所以 `removeBall()` / `reset()` 里**绝不能再写 `mesh.geometry.dispose()`** —— 那会把别人正在用的几何体一起释放（症状是整场物体消失或渲染异常，**而且不报错**，极难定位）。共享资源统一在 `disposeArt()` 收口，由 `Game.dispose()` 调用。
+
+**唯一可以就地释放的两类**（它们是所有权的例外）：每颗炮弹自己 new 的尾迹 `BufferGeometry`，以及每颗粒子通过 `fadeMaterial()` 拿到的独占材质。动了这两处，回收逻辑（`step()` 的 particles 段）要一起改。
 
 ### ⚠️ 陷阱五：字段声明位置在方法之后也没关系（但别被误导）
 
@@ -187,6 +196,14 @@ const camPos = cannon.position.clone().addScaledVector(back, -CAM_BACK).add(new 
 `barrel.rotation.x = -THREE.MathUtils.degToRad(this.pitch)` 多了一个负号，导致炮管的**视觉朝向和弹道方向相反**：pitch 22° 时炮口世界 y=0.33（应为 2.87），炮管朝下 22° 而炮弹朝上 22°，差 44°。去掉负号即可。
 
 这个 bug 一直存在，只是长期被陷阱七掩盖 —— 相机一修好、炮身完整露出来，它立刻显形。**改动朝向类旋转量后，务必核对「炮口世界坐标」与「实际弹道方向」是否同向**（用 `muzzle.getWorldPosition()` 对比 `aimDir`，不要只看画面觉得「差不多」）。
+
+### ⚠️ 陷阱九：`IcosahedronGeometry` 是非索引几何体，`flatShading` 对它无效（2026-09-23 美术重构踩到）
+
+three.js 的 `IcosahedronGeometry` / `OctahedronGeometry` 每个三角形独占顶点（非索引），所以 `computeVertexNormals()` 出来的**永远是逐面法线**，`flatShading: true/false` 都不改变结果。想靠 `flatShading: false` 把多面体「变圆滑」是无效的。
+
+这个坑的代价是：云用二十面体 + 受光材质时，刻面明暗对比很大，**飘在天上会被读成「漂浮的岩石」而不是云**。低多边形云是靠**剪影 + 极低对比度**成立的，所以 `cloudMaterial()` 用 `MeshLambertMaterial` 加了一层较强的 `emissive` 把暗面抬起来 —— 这是全场景**唯一**偏离「单一 `MeshPhongMaterial{flatShading}` 家族」的地方，**别顺手改回去**。
+
+判断方法：改完云之后截一张天空的局部放大图（`Page.captureScreenshot` 带 `clip` + `scale`），如果看到明显的黑白刻面对比就是又退回去了。
 
 ---
 
@@ -244,6 +261,16 @@ node --experimental-strip-types --no-warnings _phys.mjs 6   # 临时脚本，见
 
 注意 `size` 语义不统一：**box 是完整尺寸 `[w,h,d]`；cylinder 是 `[radius, height, radius]`（第三个被忽略）**。`levels.ts` 里的注释对此也含糊，改动时以 `addBrick()` 的实际读取为准。
 
+### 改外观 / 加一种环境道具（**先读 `ART_DIRECTION.md`，别跳**）
+
+外观改动**只在 `src/game/art.ts` 里做**，`Game.ts` 只负责把 `art.ts` 的产物挂进场景。
+
+- 改颜色 → 改 `PALETTE`（砖色组）或 `ENV`（环境色）。**不要**在 `Game.ts` 里写 `new THREE.MeshPhongMaterial({ color: 0x… })` —— 那会绕过缓存，色值也会漂出调色板。
+- 加几何体 → 在 `art.ts` 的「几何工厂」区加一个 `xxxGeometry()`，用 `cachedGeo('key', () => …)` 包一层。**不要直接 `new THREE.BoxGeometry()` 塞给某个 mesh**（每个 mesh 一份几何体，批次与显存都涨）。
+- 加环境道具 → 走四步：`instanced(geo, material, count, castShadow)` → `put(mesh, i, …)` → **`hide(mesh, usedCount)`** → **`commit(mesh)`**。⚠️ 漏 `hide()` 的话没用到的实例会停在原点变成一个突兀的道具；漏 `commit()` 则矩阵不上传、物体根本不出现。
+- 需要逐实例改透明度的东西（粒子 / 彩带）→ 材质必须用 `fadeMaterial()` 拿**独占**实例，几何体走缓存；回收时只 dispose 材质，**不要 dispose 几何体**（见陷阱四）。
+- 改完必须：`tsc --noEmit` → 构建 → 在 `ART_DIRECTION.md` 的「验收」表里补证据（批次 / 三角形 / 包体）。
+
 ### 调物理手感
 
 所有可调常量集中在 `Game.ts` 顶部：
@@ -286,6 +313,10 @@ npm run dev             # 手动过一遍
 11. **开局静置**（**动过 `levels.ts` 就必须跑**）：进每一关，什么都不做等 3 秒，**目标进度必须是 `0 / N`**。任何一关出现非零都说明有砖块自己倒了（见陷阱六，L5 曾因此开局自动胜利）
 12. **视角遮挡**（**动过相机或 `buildCannon()` 就必须看**）：默认 22° 仰角下，砖墙与白色轨迹虚线应**完整可见**；再把仰角拉到 75°，炮身不应填满画面、相机不应钻到地面以下
 13. **炮管朝向**：`muzzle.getWorldPosition()` 应落在「炮弹实际飞出去的方向」上；抬到高仰角时炮管朝上而不是朝下（见陷阱八，符号写反过一次）
+14. **美术改动后**（**动过 `art.ts` 就必须跑**）：`renderer.info.render.calls` 与 `triangles` 仍在 `ART_DIRECTION.md` 6.3 的预算内；云**不能被读成漂浮的岩石**（截一张天空的局部放大图看，见陷阱九）；落点标记在压低仰角时可见，关掉「轨迹线」开关应一并消失
+15. **资源所有权**：连开 2~3 炮后按 `R`，再切一关 —— 场景中不应出现「整类物体突然消失 / 渲染异常」（那是共享几何体被误 dispose 的症状，见陷阱四）
+
+> ⚠️ 读 `renderer.info.render.calls` 时注意：它**把阴影贴图那一趟也算进来了**（实测占 47%）。要单独测环境占用，先把 `levelGroup` 与 `cannon` 藏起来再读。
 
 > 动到文案时，重点测 **HUD 与结算浮层**：它们的字来自两张不同的表 —— 界面文字在 `i18n.ts` 的 `UI`，关卡名与目标文案来自 `levels.ts` + `objectiveText()`。只改一处最容易漏。
 
@@ -296,6 +327,7 @@ npm run dev             # 手动过一遍
 | # | 事项 | 说明 |
 |---|---|---|
 | 0 | ✅ **相机遮挡 / 关卡初始摆放 / 炮管朝向**（2026-09-23 完成） | 三项一起修完，详见 README「2026-09-23 三处修复」与本文陷阱六 / 七 / 八。**相机与摆砖是本项目最容易反复踩的两处，动之前先读陷阱** |
+| 0.5 | ✅ **美术风格重构为「精致 Low-Poly」**（2026-09-23 完成） | 新增 `src/game/art.ts`（唯一美术出口）+ HUD 同源重做 + 落点标记。规则源与实测数据在 `ART_DIRECTION.md`。剩可选项：真机 GPU 帧时间实测、低端机降级档的真机验证 |
 | 1 | **加一个关卡数据统计脚本** | 比如 `tools/level-stats.mjs`，用 `node --experimental-strip-types` 直接 import `levels.ts`，打印每关的砖数/颜色分布/静态件/目标/弹药。做关卡配平时会反复用到（L4 红砖配平、L5 的 52 块砖是否过载都要靠它给数） |
 | 1.5 | **把开局静置检查留档成脚本** | 本轮验证用的 `_phys.mjs`（真实 cannon-es 空跑 6 秒、逐块报告自倒数）随用随删了。它是防「摆砖坑」复发的唯一自动化手段，建议放进 `tools/` 长期保留 —— 否则下次改关卡又要从零重建 |
 | 2 | **决定 L4 目标** | 场上 5 块红砖、目标要 4 块。改目标数，或改 `wall()` 的上色序列把红剔掉 |
