@@ -8,14 +8,15 @@
 
 ## 1. 五分钟上手
 
-代码只有 6 个文件、约 1260 行。**按这个顺序读**：
+代码只有 8 个文件、约 1520 行。**按这个顺序读**：
 
 | 顺序 | 文件 | 读它的目的 |
 |---|---|---|
 | 1 | `src/game/levels.ts` | 先看数据。5 关长什么样、`wall/tower/arch` 三个工厂怎么拼关卡，读完就有大概画面 |
-| 2 | `src/App.tsx` | 再看 UI。HUD 有哪些字段、有几个浮层、UI 反向下发调了哪几个方法 |
-| 3 | `src/game/Game.ts` | 最后看引擎。先读 `constructor`（装配）→ `reset()`（初始化）→ `step()`（每帧）→ `finish()`（结算），其余都是细节 |
-| 4 | `src/game/audio.ts` | 独立小模块，10 分钟看完，不用记 |
+| 2 | `src/i18n.ts` | 再看文案。所有界面文字的中英对照、语言状态怎么存、关卡目标文案怎么拼出来 |
+| 3 | `src/App.tsx` | 再看 UI。HUD 有哪些字段、有几个浮层、UI 反向下发调了哪几个方法 |
+| 4 | `src/game/Game.ts` | 最后看引擎。先读 `constructor`（装配）→ `reset()`（初始化）→ `step()`（每帧）→ `finish()`（结算），其余都是细节 |
+| 5 | `src/game/audio.ts` | 独立小模块，10 分钟看完，不用记 |
 
 没有测试、没有构建脚本之外的工程化设施。想验证就 `tsc --noEmit` + 手动跑。
 
@@ -23,7 +24,7 @@
 
 ## 2. 引擎是怎么组织的
 
-`Game` 是一个「一个类装下整个游戏」的写法（691 行），内部分四块，靠注释分隔：
+`Game` 是一个「一个类装下整个游戏」的写法（690 行），内部分四块，靠注释分隔：
 
 ```
 buildEnvironment()   天空球 / 半球光 / 平行光+阴影 / 云 / 地面 / 远山
@@ -126,18 +127,27 @@ for (const p of this.particles) { this.scene.remove(p.mesh); p.mesh.geometry.dis
 
 ```ts
 {
-  name: '关卡名',
-  hint: '一句提示',              // ⚠️ 定义了但当前 UI 没有渲染它（预留字段）
+  name: { zh: '关卡名', en: 'Level Name' },   // 中英对照，见 i18n.ts 的 LocalizedText
+  hint: { zh: '一句提示', en: 'A hint' },     // ⚠️ 已备好中英文，但当前 UI 没有渲染它（预留字段）
   ammo: 5,
   targetScore: 2000,
   twoStarAmmoLeft: 2,            // 现有 5 关全是 2
   ground: 'grass' | 'sand',
-  objective: { kind: 'knockCount', count: 10, text: 'Knock down 10 bricks' },
+  objective: { kind: 'knockCount', count: 10 },   // ⚠️ 没有 text 字段了，文案由 objectiveText() 拼
   bricks: [...wall(...), ...tower(...)],
 }
 ```
 
 `App.tsx` 的暂停面板用 `grid-cols-5` 排关卡按钮，**加到第 6 关需要同步改网格列数**。
+
+> ⚠️ **别把目标文案写回关卡数据里。** 早先 `Objective` 有个 `text: string` 字段，是手写的英文句子，和 `count` 是两个独立数字 —— 改了 `count` 忘了改 `text` 就会出现「数据是打 12 块、界面上写着 8 块」的静默不一致。现在文案统一由 `i18n.ts` 的 `objectiveText(objective, lang)` 按 `kind / count / color` 现场拼，从结构上排除了这种漂移。
+
+### 加一门语言 / 改文案
+
+- **改现有文案**：只动 `src/i18n.ts` 的 `UI` 对象（界面文字）与 `COLOR_ZH`（颜色词）。`levels.ts` 里的 `name` / `hint` 也在各自关卡上。
+- **加一门语言**：① `Lang` 联合类型加字面量；② `UI` 里补一个同名 key 的完整对象（TS 会强制你补齐，缺字段直接编译不过）；③ `COLOR_ZH` 补颜色词；④ `App.tsx` 的 `LangSwitch` 里加一个选项（标签用该语言自己的写法，如 `日本語`）；⑤ `i18n.ts` 的 `load()` 里放行新的存储值。
+- **文案不要分散写进组件**：`App.tsx` 里只允许出现 `s.xxx` 取值，不写裸字符串。否则加语言时会漏。
+- **引擎不参与翻译**：`Game.ts` 不 import `i18n.ts`，它只传 `level` 序号与 `objectiveProgress`（纯数字）。这样切语言时界面立刻更新，不会出现「引擎里还残留上一门语言」的中间态。
 
 ### 加一种砖块形状
 
@@ -176,13 +186,16 @@ npm run dev             # 手动过一遍
 
 手动回归清单（改引擎后建议全过一遍）：
 
-1. 教程页 → START PLAYING 能进游戏
+1. 教程页 → 开始游戏 / START PLAYING 能进游戏
 2. 鼠标瞄准、WASD、Q/E、滚轮、滑杆五种输入都生效
 3. 连开 2~3 炮后按 `R` —— **场上不应残留任何冻结的黑球**（这是 2026-09-23 那个 bug 的复现步骤，以后每次动 `reset()` 都要测）
 4. 打到目标 → 等结算浮层出现，星星数量正确
 5. 打光弹药未达成目标 → 失败浮层出现（注意可能要等最多 9 秒，见 README 待办）
 6. `Esc` 暂停 → 选关 → 切换关卡不残留上一关的砖
 7. 缩放窗口，canvas 跟随
+8. **语言切换**：首页点 `English` → 教程页 / HUD / 暂停页 / 胜负页**四处文案应同时变英文且无中文残留**；切回 `中文` 同样；刷新页面语言应记住；`<html lang>` 与标签页标题跟着变
+
+> 动到文案时，重点测 **HUD 与结算浮层**：它们的字来自两张不同的表 —— 界面文字在 `i18n.ts` 的 `UI`，关卡名与目标文案来自 `levels.ts` + `objectiveText()`。只改一处最容易漏。
 
 ---
 
@@ -198,7 +211,7 @@ npm run dev             # 手动过一遍
 | 6 | **关卡解锁门槛** | 依赖 #4 的持久化数据 |
 | 7 | **判负不要空等 9 秒** | 让 `allSettled()` 对"已静止但尚未超时"的炮弹也放行，或缩短超时 |
 | 8 | **补 `"typecheck": "tsc --noEmit"` 脚本** | 并在 CI（Vercel Build Command 可改成 `npm run typecheck && npm run build`）里接上，避免类型错误悄悄进产物 |
-| 9 | **文案本地化** | 界面全英文，若面向中文用户需要一轮中文化 |
+| 9 | ✅ **文案本地化**（2026-09-23 完成） | 界面默认中文、首页可切中英文、选择持久化。剩下的可选项：把 `LevelDef.hint` 真正渲染出来（关卡开始时的提示条），以及移动端窄屏下中文文案的重排 |
 | 10 | **清死代码** | `src/utils/cn.ts`（从未引用）、`Game.ts` 末尾的 `LEVEL_COUNT`（从未引用）、`Objective` 的 `knockAll`/`score` 分支、`evaluate()` 里 `finish(false)` 前那句无效的 `endTimer += dt` |
 
 ---

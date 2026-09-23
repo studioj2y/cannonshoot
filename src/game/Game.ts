@@ -5,8 +5,6 @@ import { COLORS, LEVELS, type BrickDef, type LevelDef, type ColorKey } from './l
 
 export interface HudState {
   level: number;
-  levelName: string;
-  objective: string;
   objectiveProgress: string;
   ammo: number;
   maxAmmo: number;
@@ -655,8 +653,6 @@ export class Game {
   private pushHud() {
     this.onHud({
       level: this.levelIndex + 1,
-      levelName: this.level.name,
-      objective: this.level.objective.text,
       objectiveProgress: this.objectiveProgress(),
       ammo: this.ammo,
       maxAmmo: this.level.ammo,

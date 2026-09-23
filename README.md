@@ -1,6 +1,8 @@
-# Color Brick Cannon
+# 彩色砖块炮台 (Color Brick Cannon)
 
 3D 物理破坏解谜小游戏。你操控一台彩色炮台，用有限的弹药把远处的砖墙、叠塔、拱门轰塌，完成每关目标。
+
+**界面默认中文，首页可一键切换中 / 英文**（选择会记住，刷新不丢）。
 
 纯前端项目，**构建产物是单个自包含的 `index.html`**，可以直接丢到任意静态托管（Vercel / GitHub Pages / 对象存储 / 甚至双击本地打开）。
 
@@ -11,7 +13,7 @@
 ```bash
 npm ci          # 按锁文件安装依赖（102 个包，约 123MB）
 npm run dev     # 开发服务器，默认 http://localhost:5173
-npm run build   # 生产构建 → dist/index.html（单文件，约 870KB / gzip 234KB）
+npm run build   # 生产构建 → dist/index.html（单文件，约 875KB / gzip 236KB）
 npm run preview # 本地预览构建产物
 ```
 
@@ -39,7 +41,27 @@ npx tsc --noEmit
 | `R` | 重开当前关 |
 | `Esc` | 暂停 / 继续（暂停面板内含关卡选择） |
 
-界面上还有两个开关：**Trajectory**（抛物线预测虚线）、**Sound**（音效，WebAudio 实时合成，零音频素材）。
+界面上还有两个开关：**轨迹线 / Trajectory**（抛物线预测虚线）、**音效 / Sound**（WebAudio 实时合成，零音频素材）。
+
+---
+
+## 界面语言
+
+默认 **中文**，首页（教程浮层）中部有 `中文 | English` 切换按钮，**暂停面板底部也有一个**（这样切错语言不用刷新就能切回来）。
+
+| 行为 | 落地方式 |
+|---|---|
+| 文案存放 | 全部集中在 `src/i18n.ts`，一处文案 = 一份 `{ zh, en }` 对照 |
+| 关卡名 / 关卡提示 | 放在 `levels.ts` 的关卡数据里，同样是 `{ zh, en }` 结构 |
+| 关卡目标文案 | **不写死**，由 `objectiveText(objective, lang)` 按 `kind / count / color` 现场拼出 —— 改了关卡数值文案不会跟着对不上 |
+| 默认值 | `zh`；未做过选择的用户进来就是中文 |
+| 记忆 | 切换后写入 `localStorage['cbc:lang']`，刷新 / 重开浏览器仍生效 |
+| 附带同步 | `<html lang>` 与标签页标题（`document.title`）一起切换 |
+| 切换方式 | `useLang()`（内部是 `useSyncExternalStore`），所有读它的组件立即重渲染 |
+
+**加一门语言**：给 `Lang` 加一个字面量 → 在 `UI` 里补齐同名字段 → 在 `COLOR_ZH` 补颜色词。其余代码不用动。
+
+> 引擎层（`Game.ts`）**不产出任何界面文案**。它只通过 `HudState` 传数值与 `level` 序号，UI 自己按序号查表取文案。这样切换语言时界面会立刻更新，不存在「引擎里残留上一门语言字符串」的问题。
 
 ---
 
@@ -52,7 +74,7 @@ npx tsc --noEmit
 | `knockCount` | 砸倒 N 块砖 | L1 / L3 / L5 |
 | `targets` | 砸掉所有带 `target` 标记的砖（紫色圆柱） | L2 |
 | `color` | 砸掉 N 块指定颜色的砖 | L4 |
-| `knockAll` | 砸掉全部非静态砖 | *未使用（预留）* |
+| `knockAll` | 砸掉全部非静态砖 | *未使用（预留，`i18n.ts` 已有对应文案模板）* |
 | `score` | 达到目标分数 | *未使用（预留）* |
 
 **「被砸倒」的判定**：砖块的位移 > **1.2**，**或者** 倾角 > **38°**（只看局部 Y 轴，所以绕 Y 轴的水平旋转不算倒）。
@@ -80,11 +102,11 @@ npx tsc --noEmit
 
 | # | 名称 | 砖块 | 弹药 | 目标分 | 目标 | 地面 |
 |---|---|---|---|---|---|---|
-| 1 | Basic Wall | 24（全可动） | 5 | 900 | 砸倒 8 块 | 草地 |
-| 2 | Brick Tower | 20（19 可动 + 1 静态底座） | 5 | 1600 | 砸掉塔顶紫色王冠 | 草地 |
-| 3 | Unbalanced Arch | 24（全可动） | 4 | 2000 | 砸倒 14 块 | 沙地 |
-| 4 | Platforms & Bridges | 21（18 可动 + 3 静态平台） | 5 | 2600 | 砸掉 4 块红砖 | 草地 |
-| 5 | Complex Fortress | 56（55 可动 + 1 静态底座） | 6 | 4200 | 砸倒 30 块 | 沙地 |
+| 1 | Basic Wall / 基础砖墙 | 24（全可动） | 5 | 900 | 砸倒 8 块 | 草地 |
+| 2 | Brick Tower / 砖塔 | 20（19 可动 + 1 静态底座） | 5 | 1600 | 砸掉塔顶紫色目标 | 草地 |
+| 3 | Unbalanced Arch / 不稳的拱门 | 24（全可动） | 4 | 2000 | 砸倒 14 块 | 沙地 |
+| 4 | Platforms & Bridges / 平台与吊桥 | 21（18 可动 + 3 静态平台） | 5 | 2600 | 砸掉 4 块红砖 | 草地 |
+| 5 | Complex Fortress / 复合堡垒 | 56（55 可动 + 1 静态底座） | 6 | 4200 | 砸倒 30 块 | 沙地 |
 
 **构件工厂**（`levels.ts`，用代码生成关卡，不手写坐标）：
 
@@ -106,6 +128,7 @@ npx tsc --noEmit
 | 渲染 | three 0.186（WebGL，无外部模型/贴图素材，全部程序化几何体） |
 | 物理 | cannon-es 0.20（`SAPBroadphase` + `GSSolver`，迭代 12 次） |
 | 音频 | 原生 WebAudio 振荡器合成，见 `audio.ts` |
+| 多语言 | 零依赖，自己写的 `i18n.ts`（未引入 i18next 等库） |
 
 ---
 
@@ -114,17 +137,20 @@ npx tsc --noEmit
 ```
 src/
 ├── main.tsx              (10)   React 入口
-├── App.tsx              (275)   UI 层：HUD、教程/暂停/胜负浮层、力度滑杆、开关
+├── App.tsx              (309)   UI 层：HUD、教程/暂停/胜负浮层、力度滑杆、开关、语言切换
+├── i18n.ts              (230)   界面文案总表（中英对照）+ 语言状态 + 关卡目标文案拼装
 ├── index.css             (1)    Tailwind 入口
 ├── game/
-│   ├── Game.ts          (694)   引擎：渲染 / 物理 / 输入 / 判定计分 / 主循环
-│   ├── levels.ts        (173)   5 关数据 + wall/tower/arch 构件工厂
+│   ├── Game.ts          (690)   引擎：渲染 / 物理 / 输入 / 判定计分 / 主循环
+│   ├── levels.ts        (174)   5 关数据（名称与提示为中英对照）+ wall/tower/arch 构件工厂
 │   └── audio.ts         (102)   9 种合成音效（开炮/装填/命中/闷响/坍塌/胜/负/点击）
 └── utils/
     └── cn.ts              (6)   clsx + tailwind-merge 工具 —— ⚠️ 全项目从未引用，脚手架残留
 ```
 
 **数据流**：`Game` 每帧在自己的 `step()` 末尾调用 `onHud(state)` 把 HUD 快照推给 React，`App` 用 `JSON.stringify` 比对做短路，只在真正变化时 `setState`。UI 反向下发通过直接调 `game.fire() / reset() / setPower() / loadLevel()`。
+
+**文案流向**：`Game.ts` 传 `level`（1 基序号）与 `objectiveProgress`（纯数字，如 `3 / 8`）；`App.tsx` 用 `LEVELS[hud.level - 1]` 取到关卡定义，再用 `resolve(lv.name, lang)` / `objectiveText(lv.objective, lang)` 转成当前语言的文案。**引擎不碰 `lang`**。
 
 **暂停语义**：`game.paused = paused || tutorial`。暂停时 `step()` 整个不跑（物理、输入、HUD 一起冻结），但 `render()` 仍在跑，所以画面不黑。
 
@@ -149,12 +175,13 @@ src/
 | 相机 | 炮台后方 6.5、上方 2.6，位置 lerp 0.25 | `Game.ts` |
 | 粒子上限 | 220（胜利彩带 90 片走独立通道，不占此额度） | `Game.ts` |
 | 主音量 | 0.35 | `audio.ts` |
+| 语言存储键 | `cbc:lang`（默认 `zh`） | `i18n.ts` |
 
 ---
 
 ## 部署到 Vercel
 
-**可以，而且是最省事的方案。** 这是纯静态站点，不需要任何服务端函数、不需要环境变量、不需要数据库，Vercel 免费额度完全够用（构建产物只有一个 870KB 的 HTML）。
+**可以，而且是最省事的方案。** 这是纯静态站点，不需要任何服务端函数、不需要环境变量、不需要数据库，Vercel 免费额度完全够用（构建产物只有一个 875KB 的 HTML）。
 
 仓库内已备好 `vercel.json`（显式声明 framework= vite / buildCommand / outputDirectory，其实不写 Vercel 也能自动识别 Vite）。
 
@@ -197,6 +224,7 @@ npx vercel --prod # 部署到正式域名
 | `ENOENT: ... open '/vercel/path0/package.json'` 且 Preset 只能选 `Other` | 仓库里没有 `package.json` —— 首次提交漏推了文件 | 补齐文件后 `git push`，Vercel 自动重新部署 |
 | 构建成功但访问 404 | `Output Directory` 与实际产物目录没对上 | 确认 Output Directory = `dist`（本仓库 `vercel.json` 已声明） |
 | Preset 显示 `Other` 但构建正常 | 项目创建时 Vercel 没识别出框架 | 无需处理 —— `vercel.json` 里的 `framework: "vite"` 会覆盖预设。想收拾干净就在 Settings → Build & Development Settings 手动选 Vite，或删掉项目重新 Import |
+| `Unsupported engine` / Node 版本报错 | Vite 7 要求 Node ≥ 20.19 或 ≥ 22.12 | `package.json` 已声明 `"engines": { "node": "22.x" }`，Vercel 会据此选运行时 |
 
 ### 自定义域名
 
@@ -212,24 +240,25 @@ Vercel 项目 → Settings → Domains 添加即可。若要绑国内备案域�
 
 ## 已知问题与待办
 
-### 已修复
+### 已完成
 
+- **中英双语界面 + 语言切换**（2026-09-23）：新增 `src/i18n.ts`，默认中文，首页与暂停面板各有切换按钮，选择持久化到 `localStorage['cbc:lang']`。同时把界面文案从引擎里剥离（`HudState` 不再含 `levelName` / `objective`），`levels.ts` 的 `Objective.text` 改为按数值派生。
 - **`Game.reset()` 漏清炮弹**（2026-09-23 修复）：原代码 `for (const b of this.balls) this.removeBall(b)`，而 `removeBall` 内部会 `splice(this.balls)`，导致 `for...of` 的迭代游标跳过一半元素。残留的炮弹**既留在 cannon-es 物理世界里继续参与碰撞，又留在场景中不再同步网格**（表现为一颗冻结的黑球立在原地）。改为迭代副本 `[...this.balls]`。复现方法：连开 2~3 炮后按 `R`。
 
 ### 待确认 / 待决策（未改动）
 
 - **L4 红砖配平**：目标是「砸掉 4 块红砖」，但场上一共有 **5 块**红砖（4 块手写 + 1 块来自 `wall()` 的 rainbow 上色），所以目标比「砸掉全部红砖」更宽松。属配平细节，不是 bug。改法二选一：目标提到 5，或把 `wall()` 的颜色序列打散掉红色。
 - **HUD 右上角的星星是误导性的**：它按 `score / targetScore` 粗估（>50% 给 2 星、≥target 给 3 星），而真实星级规则看的是**剩余弹药**。两者不是一回事。但它也是局内唯一的星级反馈，直接删掉会失去信息，需要先想清楚改成什么（比如改成进度条）。
-- **最高星级不持久化**：`App` 里 `best` 只是 `useState`，刷新页面即清零，localStorage 完全没接。
+- **最高星级不持久化**：`App` 里 `best` 只是 `useState`，刷新页面即清零。**注意：语言偏好已经接了 `localStorage`，星级还没有**，两者不要混为一谈。
+- **关卡提示 `hint` 已备好中英文但没人渲染**：`LevelDef.hint` 定义了却从未被 UI 读取（预留字段）。若要显示，最适合的位置是关卡开始时的短暂提示条。
 - **无关卡解锁门槛**：暂停面板可以直接跳到任意一关。
 - **无移动端触控**：全项目零 `touch*` / `pointer*` 事件，只有鼠标与键盘。
 - **弹药耗尽后最长空等约 9 秒**：判负要等 `allSettled()`，而炮弹要 9 秒才超时回收，最后一炮落地后如果它停在界内，会等满 9 秒才弹结算面板。
 - **失焦时按键卡住**：`keydown` / `keyup` 没有 `blur` 兜底，按住 `W` 时切走窗口，炮台会一直转。
 - **无 `ResizeObserver`**：只有 `window.resize` 监听，拖动 DevTools 停靠导致容器变小、而窗口尺寸没变时，canvas 不会跟着缩放。
-- **界面文案全英文**：`App.tsx` / `levels.ts` 里的所有目标、提示、按钮都是英文。若要面向中文用户，需要做一轮本地化。
 - **材质未 dispose（影响可忽略）**：`reset()` 里砖块与粒子只 `dispose()` 了 geometry，没释放 material。但同配置材质复用同一个 shader program，实测不构成有意义的显存增长，属吹毛求疵级。
 - **`src/utils/cn.ts` 是死代码**：脚手架残留，从未被 import。
-- **两处无用分支**：`Objective.kind` 的 `knockAll` / `score` 无关卡使用；`evaluate()` 里 `finish(false)` 之前那句 `this.endTimer += dt` 是死代码。
+- **两处无用分支**：`Objective.kind` 的 `knockAll` / `score` 无关卡使用（`i18n.ts` 已给它们备好中英文模板）；`evaluate()` 里 `finish(false)` 之前那句 `this.endTimer += dt` 是死代码。
 - **`reset()` 里清粒子的循环同样建议改成迭代副本**（当前不 splice 所以没有 bug，但写法上是个陷阱）。
 
 ---

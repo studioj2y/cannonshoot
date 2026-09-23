@@ -1,3 +1,5 @@
+import type { LocalizedText } from '../i18n';
+
 export type BrickShape = 'box' | 'cylinder' | 'wedge';
 
 export interface BrickDef {
@@ -28,12 +30,11 @@ export interface Objective {
   kind: 'knockCount' | 'knockAll' | 'color' | 'targets' | 'score';
   count?: number;
   color?: ColorKey;
-  text: string;
 }
 
 export interface LevelDef {
-  name: string;
-  hint: string;
+  name: LocalizedText;
+  hint: LocalizedText;
   ammo: number;
   targetScore: number;
   twoStarAmmoLeft: number; // ammo remaining required for 2 stars
@@ -90,36 +91,36 @@ function arch(x: number, z: number, h: number, span: number, color: ColorKey): B
 
 export const LEVELS: LevelDef[] = [
   {
-    name: 'Basic Wall',
-    hint: 'Aim at the middle of the wall and fire!',
+    name: { zh: '基础砖墙', en: 'Basic Wall' },
+    hint: { zh: '瞄准墙的正中间开炮！', en: 'Aim at the middle of the wall and fire!' },
     ammo: 5,
     targetScore: 900,
     twoStarAmmoLeft: 2,
     ground: 'grass',
-    objective: { kind: 'knockCount', count: 8, text: 'Knock down 8 bricks' },
+    objective: { kind: 'knockCount', count: 8 },
     bricks: [...wall(-4.8, 0, -26, 6, 4)],
   },
   {
-    name: 'Brick Tower',
-    hint: 'Hit the lower supports to topple the tower.',
+    name: { zh: '砖塔', en: 'Brick Tower' },
+    hint: { zh: '打底部的支柱，把整座塔掀翻。', en: 'Hit the lower supports to topple the tower.' },
     ammo: 5,
     targetScore: 1600,
     twoStarAmmoLeft: 2,
     ground: 'grass',
-    objective: { kind: 'targets', text: 'Knock down the purple crown on top' },
+    objective: { kind: 'targets' },
     bricks: [
       { shape: 'box', pos: [0, 0.25, -27], size: [7, 0.5, 5], color: 'gray', static: true },
       ...tower(0, -27, 6),
     ],
   },
   {
-    name: 'Unbalanced Arch',
-    hint: 'Remove a leg and the whole arch collapses.',
+    name: { zh: '不稳的拱门', en: 'Unbalanced Arch' },
+    hint: { zh: '拆掉一条腿，整座拱门就会塌。', en: 'Remove a leg and the whole arch collapses.' },
     ammo: 4,
     targetScore: 2000,
     twoStarAmmoLeft: 2,
     ground: 'sand',
-    objective: { kind: 'knockCount', count: 14, text: 'Knock down 14 bricks' },
+    objective: { kind: 'knockCount', count: 14 },
     bricks: [
       ...arch(-4, -26, 3.6, 3.2, 'blue'),
       ...arch(4.5, -28, 4.5, 3.6, 'green'),
@@ -130,13 +131,13 @@ export const LEVELS: LevelDef[] = [
     ],
   },
   {
-    name: 'Platforms & Bridges',
-    hint: 'Loft shots over the barrier onto the high platform.',
+    name: { zh: '平台与吊桥', en: 'Platforms & Bridges' },
+    hint: { zh: '把炮弹抛过挡板，落到高台上。', en: 'Loft shots over the barrier onto the high platform.' },
     ammo: 5,
     targetScore: 2600,
     twoStarAmmoLeft: 2,
     ground: 'grass',
-    objective: { kind: 'color', color: 'red', count: 4, text: 'Knock down 4 RED bricks' },
+    objective: { kind: 'color', color: 'red', count: 4 },
     bricks: [
       { shape: 'box', pos: [-6, 2.0, -24], size: [6, 4, 4], color: 'gray', static: true },
       { shape: 'box', pos: [6, 3.0, -30], size: [6, 6, 4], color: 'gray', static: true },
@@ -151,13 +152,13 @@ export const LEVELS: LevelDef[] = [
     ],
   },
   {
-    name: 'Complex Fortress',
-    hint: 'Plan carefully — chain reactions are the key.',
+    name: { zh: '复合堡垒', en: 'Complex Fortress' },
+    hint: { zh: '想好了再打——关键是制造连锁反应。', en: 'Plan carefully — chain reactions are the key.' },
     ammo: 6,
     targetScore: 4200,
     twoStarAmmoLeft: 2,
     ground: 'sand',
-    objective: { kind: 'knockCount', count: 30, text: 'Knock down 30 bricks' },
+    objective: { kind: 'knockCount', count: 30 },
     bricks: [
       { shape: 'box', pos: [0, 0.3, -30], size: [22, 0.6, 10], color: 'gray', static: true },
       ...tower(-7, -30, 5, 2.0),
