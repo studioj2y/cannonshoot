@@ -1,4 +1,4 @@
-type Kind = 'fire' | 'load' | 'hit' | 'thud' | 'collapse' | 'win' | 'lose' | 'click' | 'shatter';
+type Kind = 'fire' | 'load' | 'hit' | 'thud' | 'collapse' | 'win' | 'lose' | 'click' | 'shatter' | 'boom';
 
 export class AudioManager {
   ctx: AudioContext | null = null;
@@ -86,6 +86,21 @@ export class AudioManager {
       case 'collapse':
         this.noise(0.8, 0.5, 600);
         this.tone(120, 0.7, 'sawtooth', 0.2, 50);
+        break;
+      /* 爆破筒起爆。⚠️ 原本它复用 'collapse'（砖块坍塌），于是「炸弹炸了」和
+         「5 连击触发的坍塌提示」听起来是同一个音 —— 一发最贵的弹药没有自己的
+         声音身份。这里拆开：一个音负责「爆」，一个负责「塌」。
+         结构是四层叠出来的：
+           ① highpass 极短脆响 = 起爆瞬态（这一层决定「是炸不是砸」）
+           ② lowpass 380Hz 噪声 = 冲击波主体的「轰」
+           ③ 90Hz → 38Hz 的锯齿下潜 = 胸口那一下低频（手机喇叭放不出来，
+              但耳机/桌面音箱上是「威力感」的主要来源）
+           ④ 90ms 后的 240Hz 噪声 = 远处的回荡尾巴，让它在空间里「有体积」 */
+      case 'boom':
+        this.noise(0.05, 0.5 * intensity, 4200, 'highpass');
+        this.noise(0.6, 0.7 * intensity, 380);
+        this.tone(90, 0.45, 'sawtooth', 0.4 * intensity, 38);
+        setTimeout(() => this.noise(0.55, 0.24 * intensity, 240), 90);
         break;
       /* 玻璃碎裂：高频噪声「哗啦」+ 两三个短促的高音「叮」。
          ⚠️ 必须是 highpass —— 沿用 lowpass 会听成又一次砖块撞击（'hit'），

@@ -5,7 +5,8 @@ import * as THREE from 'three';
    规则源：ART_DIRECTION.md（改色、改材质、改布点前先读那份文档）
 
    三条硬约束（破坏它们会直接掉出这个风格）：
-     1. 全场景色值只能取自本文件。Game.ts / App.tsx 里不允许出现临时十六进制色。
+     1. 全场景色值只能取自本文件（`PALETTE` 砖色 / `ENV` 环境色 / `FX` 特效色）。
+        Game.ts / App.tsx 里不允许出现临时十六进制色。
      2. 几何走本文件的工厂、材质走 mat() / unlit() 缓存。⚠️ 缓存是共享的，
         所以**任何地方都不许 dispose() 缓存的 geometry/material**（换关卡也不许），
         统一由 disposeArt() 在 Game.dispose() 里收口。
@@ -65,6 +66,25 @@ export const ENV = {
   trail: 0xfff0c4,
   flash: 0xfff3c4,
   landing: 0xfff6dc,
+} as const;
+
+/**
+ * 瞬时特效色（VFX）。⚠️ 刻意不并进 PALETTE ——
+ * PALETTE 是「砖色」，是**玩法色**（红 = L4 的目标、紫 = 目标物）。
+ * 特效色只出现在寿命 0.1~1.5 秒的衰减材质上，一旦混用，
+ * 「看到红色 = 这是要打的目标」这条读法就失效了。
+ *
+ * 色相全部落在暖橙→近白这一条带上：与场景的中低饱和冷调（天空 / 草地 / 蓝灰）
+ * 形成唯一的暖色高点，爆炸才「跳」得出来。唯一的例外是 smoke —— 灰尘必须是
+ * 中性灰，否则会读成「又一次火光」而不是「扬起来的土」。
+ */
+export const FX = {
+  muzzle: 0xffe066,
+  spark: 0xfff0a0,
+  ember: 0xffc46a,
+  core: 0xfff6d8,
+  ring: 0xffb057,
+  smoke: 0xb8b1a4,
 } as const;
 
 /* --------------------------- 2. 设备档与工具 ---------------------------- */
@@ -185,6 +205,28 @@ export function flashMaterial(): THREE.MeshBasicMaterial {
 }
 
 /**
+ * 爆发特效的加性材质（爆心闪光 / 冲击波环共用）。
+ *
+ * ⚠️ 两条都不是随手写的：
+ *   · **必须独占**（不进 matCache）—— 每个特效对象逐帧改自己的 opacity 做衰减，
+ *     共享材质会让同帧的两个特效一起闪、一起灭；
+ *   · **fog: false** —— 加性混合遇到雾是「在雾色之上再加亮」。留着雾的话，
+ *     远处（40m+）的爆炸会一边被雾冲淡、一边又被雾色垫亮，最后糊成一团灰白的
+ *     雾斑，比近处的爆炸还显眼。加性光本来也不该被大气衰减。
+ *   · 同理不加 `depthWrite` —— 加性叠层写深度会把后面的粒子切掉。
+ */
+export function blastMaterial(color: number, opacity = 1): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    fog: false,
+  });
+}
+
+/**
  * 云 —— 必须与砖块 / 岩石用不同的材质策略。
  * ⚠️ 坑：`IcosahedronGeometry` 是**非索引**几何体（每个三角形独占顶点），
  * 所以 `computeVertexNormals()` 永远产出逐面法线、`flatShading` 开关不起作用，
@@ -276,6 +318,25 @@ export function prismGeometry(rTop: number, rBottom: number, h: number, sides: n
 /** 玻璃碎片 —— 三棱柱。碎裂时撒一把，棱角比通用碎屑更「锋利」，一眼看出是玻璃碴 */
 export function shardGeometry(): THREE.BufferGeometry {
   return prismGeometry(0.055, 0.15, 0.32, 3);
+}
+
+/**
+ * 冲击波环 —— 三棱管低面数圆环（`radialSegments = 3`）。
+ * ⚠️ 为什么不是 RingGeometry（平面圆环）：平面环在近水平的机位上会被压成一条线，
+ * 几乎看不见；管状环有厚度，任何角度都读得出来。
+ * ⚠️ 为什么 tube 段数取 3：全场景的规矩是「不出现光滑圆柱」（见 prismGeometry），
+ * 3 段管的截面是三角形，放大后是刻面的 —— 落在同一个风格里。
+ *
+ * 半径写 **1**，实际大小全靠 `mesh.scale` 放大 —— 这样冲击波的最大半径
+ * 可以精确等于 `EXPLOSION_RADIUS`，玩家看到的边界就是判定边界。
+ */
+export function ringGeometry(): THREE.BufferGeometry {
+  return cachedGeo('blastRing', () => new THREE.TorusGeometry(1, 0.085, 3, 20));
+}
+
+/** 尘埃团 —— 二十面体，靠 `mesh.scale` 逐帧放大 + 非等比压扁（走 icoGeometry 缓存） */
+export function dustGeometry(): THREE.BufferGeometry {
+  return icoGeometry(0.42, 0);
 }
 
 /** 低多边形岩石：二十面体 + 顶点扰动（形状固定，靠非等比缩放拉开差异） */
@@ -427,7 +488,7 @@ function makeSky(): THREE.Mesh {
 
 /* ---------------------------- 7. 光照台 ------------------------------- */
 
-function addLights(scene: THREE.Scene, low: boolean): void {
+function addLights(scene: THREE.Scene, low: boolean): THREE.PointLight {
   // 半球光：天光冷、草地反弹暖，负责把暗部从死黑里拉起来
   scene.add(new THREE.HemisphereLight(ENV.hemiSky, ENV.hemiGround, 0.55));
 
@@ -449,6 +510,18 @@ function addLights(scene: THREE.Scene, low: boolean): void {
   const fill = new THREE.DirectionalLight(ENV.fillLight, 0.34);
   fill.position.set(-24, 16, -26);
   scene.add(fill);
+
+  /* 爆炸闪光灯：常驻 + 强度 0，爆炸时由 Game 脉冲点亮。
+     ⚠️ intensity 用的是物理单位（decay = 2 ⇒ 照度 ≈ intensity / d²）：
+        取 42 意味着「离爆心 2m 处的照度约 10.5」——白天场景的主光是 1.65，
+        所以这一下闪光是主光的 6 倍出头：足够把周围的砖全打亮，
+        又不至于把整个画面推成一片白（那会盖住「砖被炸飞了没有」这个关键读图）。
+     ⚠️ castShadow 保持 false：点光源阴影要渲染 6 面立方体贴图，
+        一次性特效付不起这个成本，而且闪光期间本来就该让影子消失。 */
+  const blast = new THREE.PointLight(FX.core, 0, 18, 2);
+  blast.castShadow = false;
+  scene.add(blast);
+  return blast;
 }
 
 /* --------------------------- 8. 环境点缀 ------------------------------ */
@@ -505,6 +578,15 @@ function instanced(geo: THREE.BufferGeometry, material: THREE.Material, count: n
 export interface Scenery {
   ground: THREE.Mesh;
   setGround(kind: 'grass' | 'sand'): void;
+  /**
+   * 爆炸闪光用的点光源。**常驻场景、平时强度为 0**，爆炸时被 Game 脉冲式点亮。
+   *
+   * ⚠️ 绝不能在爆炸时才 `scene.add(light)`：three.js 的着色器程序是按
+   * 「光源数量」缓存的，场上的灯从 3 盏变成 4 盏会让**所有材质重新编译**，
+   * 表现在玩家侧就是爆炸当帧卡一下（第一次爆炸尤其明显）。常驻一个强度 0 的灯，
+   * 编译只发生一次（构造时），之后只是改数值。
+   */
+  blastLight: THREE.PointLight;
 }
 
 /**
@@ -513,7 +595,7 @@ export interface Scenery {
  */
 export function buildScenery(scene: THREE.Scene): Scenery {
   const low = isLowPowerDevice();
-  addLights(scene, low);
+  const blastLight = addLights(scene, low);
   scene.add(makeSky());
 
   /* --- 地面：600×600 是为了让边缘落在雾的远端之外，否则会看到一块悬空的地板边 --- */
@@ -664,6 +746,7 @@ export function buildScenery(scene: THREE.Scene): Scenery {
   const tuftMat = tufts.material as THREE.MeshPhongMaterial;
   return {
     ground,
+    blastLight,
     setGround(kind) {
       groundMat.map = groundTexture(kind);
       groundMat.needsUpdate = true;
