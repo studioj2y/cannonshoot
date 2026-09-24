@@ -6,6 +6,7 @@
  *   node tools/playtest.mjs 6 10            # 只测指定关
  *   node tools/playtest.mjs --shots 3       # 贪心 3 发（慢很多，慎用）
  *   node tools/playtest.mjs --grid blind    # 用盲扫网格而不是瞄准解算
+ *   node tools/playtest.mjs --ammo hammer   # 换一种弹药扫（standard/hammer/bomb/triple）
  *
  * 原理：不开浏览器，在 Node 里用真实 cannon-es 复刻物理（参数照抄 Game.ts），
  * 候选炮弹不是瞎撒点，而是**瞄准每座结构最低那几块砖反解出来的弹道**
@@ -15,6 +16,11 @@
  * ⚠️ 玻璃砖（kind: 'glass'）必须一起复刻：撞击超过 GLASS_BREAK_V 就当场消失、
  *    不再提供支撑，而且**算一块击倒**。不复刻的话，带玻璃的关卡会被严重低估
  *    （工具以为那排腿还在撑着，真机上早就没了）。
+ *
+ * ⚠️ **弹药同样必须复刻**（AMMO 表）。加了新弹药却没在这里补一条，**不会报错** ——
+ *    工具会静默按标准弹算，给出的「一发最好」与真机不符。真机上弹药会改变
+ *    半径 / 质量 / 初速倍率，爆破筒还要算爆炸，三连发要算三颗的散射。
+ *    默认扫的是 standard，跨版本比较历史数字时必须用同一个 --ammo。
  *
  * ⚠️ 为什么不用全盲网格：真实 cannon-es 单步约 1.8ms，一发要跑 ~270 步，
  *    全网格 × 贪心 N 发是 O(网格 × N²) 的算法，跑一关要几十分钟。瞄准解算把
@@ -45,8 +51,19 @@ const CANNON_POS = { x: 0, y: 1.6, z: 0 };
 const MUZZLE_OFFSET = 3.4;   // 炮口到炮台原点（沿 aimDir）
 const BALL_LEAD = 0.6;       // 出膛点再往前推一点
 const START_LEAD = MUZZLE_OFFSET + BALL_LEAD; // 出膛点到炮台原点的距离 = 4.0
-const BALL_R = 0.45;
-const BALL_MASS = 9;
+
+/* ---- 弹药表：与 src/game/ammo.ts 逐条对应（改那边记得改这边） ----
+   standard 的 0.45 / 9 / 1.0 就是历史所有难度数字的基准，不要动。 */
+const AMMO = {
+  standard: { radius: 0.45, mass: 9, powerScale: 1.0, count: 1, spread: 0 },
+  hammer: { radius: 0.62, mass: 18, powerScale: 0.88, count: 1, spread: 0 },
+  bomb: { radius: 0.5, mass: 11, powerScale: 1.0, count: 1, spread: 0 },
+  triple: { radius: 0.32, mass: 5, powerScale: 1.0, count: 3, spread: 7 },
+};
+const BOMB_TRIGGER_V = 1.5;    // 命中当帧引爆，无引信延迟（同 Game.ts）
+const EXPLOSION_RADIUS = 3.4;
+const EXPLOSION_DV = 14;       // 爆炸给的速度增量（中心处）
+
 const BALL_LIFE = 9;         // 炮弹存活秒数
 const MAX_BALLS = 6;         // 同场上限
 const GLASS_BREAK_V = 3.0;   // 玻璃碎裂的撞击速度阈值（同 Game.ts）
@@ -64,6 +81,13 @@ const TAIL = Number(flag('tail', 1.5));       // 收尾再跑多少秒
 const SAMPLE = Number(flag('sample', 10));    // 瞄准解算采样多少块砖
 const only = argv.filter((a) => /^\d+$/.test(a)).map(Number);
 const SAY = argv.includes('--quiet') ? () => {} : (m) => process.stderr.write(m);
+
+const AMMO_KIND = flag('ammo', 'standard');
+if (!Object.prototype.hasOwnProperty.call(AMMO, AMMO_KIND)) {
+  process.stderr.write(`未知弹药：${AMMO_KIND}（可选：${Object.keys(AMMO).join(' / ')}）\n`);
+  process.exit(1);
+}
+const AMMO_DEF = AMMO[AMMO_KIND];
 
 /* 仰角采样点与初速浮动档。
    ⚠️ 这两个数组是运行时间的主要开关：候选数 = 采样砖数 × 仰角数 × 初速档数，
@@ -162,15 +186,47 @@ const aimDir = (yaw, pitch) => {
   return { x: -Math.sin(y) * Math.cos(p), y: Math.sin(p), z: -Math.cos(y) * Math.cos(p) };
 };
 
-/** 炮弹的 9 秒回收与同场上限都要照抄 Game.ts，否则第 2 发之后的物理跟真机对不上 */
+/** 爆破筒爆炸的复刻 —— 与 Game.explode 用同一套算法：
+ *  按「速度增量」施加（而不是写死冲量，那样轻砖飞天重砖不动）、边缘线性衰减、
+ *  玻璃砖的 Δv 超过 GLASS_BREAK_V 就直接判碎（悬空玻璃被炸飞之后等不到碰撞）。 */
+function explode(items, ball) {
+  const at = ball.body.position;
+  for (const it of items) {
+    if (it.def.static || it.shattered) continue;
+    const p = it.body.position;
+    const dx = p.x - at.x;
+    const dy = p.y - at.y;
+    const dz = p.z - at.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > EXPLOSION_RADIUS) continue;
+    const dv = EXPLOSION_DV * (1 - d / EXPLOSION_RADIUS);
+    const len = Math.max(0.001, d);
+    const k = dv * it.body.mass;
+    it.body.applyImpulse(new CANNON.Vec3((dx / len) * k, (dy / len) * 0.6 * k + 0.5 * k, (dz / len) * k));
+    if (it.def.kind === 'glass' && dv > GLASS_BREAK_V) it.breakQueued = true;
+  }
+}
+
+/** 帧序与 Game.step 一致：先 world.step，再兑现炮弹的引爆 / 回收，最后清算碎裂。
+ *  ⚠️ 爆炸必须放在 world.step **之后**（引擎里也在 step 后的炮弹清理段）——
+ *     它要改一堆刚体的速度，放在 step 之前等于在求解器工作期间改速度。
+ *  ⚠️ 接触引爆**没有引信倒计时**：collide 里置 detonate，这里当帧兑现。
+ *  ⚠️ 炮弹的 9 秒回收与同场上限同样要照抄 Game.ts，否则第 2 发之后跟真机对不上。 */
 function stepWorld(world, balls, items, dt, t) {
+  world.step(dt, dt, 4);
   for (let i = balls.length - 1; i >= 0; i--) {
-    if (t - balls[i].born > BALL_LIFE) {
-      world.removeBody(balls[i].body);
+    const b = balls[i];
+    if (b.detonate) {
+      explode(items, b);
+      world.removeBody(b.body);
+      balls.splice(i, 1);
+      continue;
+    }
+    if (t - b.born > BALL_LIFE) {
+      world.removeBody(b.body);
       balls.splice(i, 1);
     }
   }
-  world.step(dt, dt, 4);
   // 同 Game.drainShatters：step 之后再清算本帧要碎的玻璃
   drainGlass(items);
 }
@@ -189,24 +245,41 @@ function settled(items, balls) {
   return true;
 }
 
+/** 发球。半径 / 质量 / 初速倍率全部从 AMMO 表读，三连发一次发 3 颗。
+ *  ⚠️ 散射偏移作用在 **yaw** 上再重算整个方向向量，不能直接给 dir 的 x 分量加个数 ——
+ *     那样只改水平分量、等于把仰角也改了（弹道整体变平）。 */
 function fire(world, balls, ballMat, shot, t) {
-  const dir = aimDir(shot.yaw, shot.pitch);
-  const body = new CANNON.Body({
-    mass: BALL_MASS,
-    shape: new CANNON.Sphere(BALL_R),
-    material: ballMat,
-    position: new CANNON.Vec3(
-      CANNON_POS.x + START_LEAD * dir.x,
-      CANNON_POS.y + START_LEAD * dir.y,
-      CANNON_POS.z + START_LEAD * dir.z
-    ),
-    linearDamping: 0.005,
-  });
-  body.ccdSpeedThreshold = 8;
-  body.ccdIterations = 6;
-  body.velocity.set(dir.x * shot.power, dir.y * shot.power, dir.z * shot.power);
-  world.addBody(body);
-  balls.push({ body, born: t });
+  for (let i = 0; i < AMMO_DEF.count; i++) {
+    const off = AMMO_DEF.count > 1 ? (i - (AMMO_DEF.count - 1) / 2) * AMMO_DEF.spread : 0;
+    const dir = aimDir(shot.yaw + off, shot.pitch);
+    const body = new CANNON.Body({
+      mass: AMMO_DEF.mass,
+      shape: new CANNON.Sphere(AMMO_DEF.radius),
+      material: ballMat,
+      position: new CANNON.Vec3(
+        CANNON_POS.x + START_LEAD * dir.x,
+        CANNON_POS.y + START_LEAD * dir.y,
+        CANNON_POS.z + START_LEAD * dir.z
+      ),
+      linearDamping: 0.005,
+    });
+    body.ccdSpeedThreshold = 8;
+    body.ccdIterations = 6;
+    const speed = shot.power * AMMO_DEF.powerScale;
+    body.velocity.set(dir.x * speed, dir.y * speed, dir.z * speed);
+    const rec = { body, born: t, detonate: false };
+    if (AMMO_KIND === 'bomb') {
+      // 与 Game.spawnBall 一致：命中当帧引爆（阈值只用来放过纯擦碰）。
+      // 没有引信倒计时 —— 关卡没有纵深，延迟等于让球掠过整个目标。
+      body.addEventListener('collide', (e) => {
+        if (rec.detonate) return;
+        const v = Math.abs(e.contact.getImpactVelocityAlongNormal?.() ?? 0);
+        if (v > BOMB_TRIGGER_V) rec.detonate = true;
+      });
+    }
+    world.addBody(body);
+    balls.push(rec);
+  }
   while (balls.length > MAX_BALLS) {
     world.removeBody(balls[0].body);
     balls.shift();
@@ -395,16 +468,24 @@ for (const { lv, n } of targets) {
   );
 }
 
-console.log('--- 汇总：新关的两个比值应落在老关同一带里 ---');
-console.log('关   | 可击倒 | 目标 | 弹药 | 一发最好 | 一发/场 | 一发/目标 | 弹药×一发/目标');
+console.log(
+  `--- 汇总（弹药 ${AMMO_KIND}：半径 ${AMMO_DEF.radius} / 质量 ${AMMO_DEF.mass} / ` +
+    `初速 ×${AMMO_DEF.powerScale} / 一次 ${AMMO_DEF.count} 颗）---`
+);
+console.log('E = 目标 ÷ 一发最好 = 理论最少发数；E ≤ 1 说明存在「一发即胜」的弹道（见 GAME_DESIGN.md 第 3 节）');
+console.log('关   | 可击倒 | 目标 | 弹药 | 一发最好 | 一发/场 | 一发/目标 |    E | 弹药×一发/目标');
 for (const r of rows) {
   const a = r.bestOne / r.total;
   const b = r.need ? r.bestOne / r.need : NaN;
   const c = r.need ? (r.ammo * r.bestOne) / r.need : NaN;
+  // E = 目标 ÷ 一发最好。它对「打目标物」类关卡会失真（一发最好数的是砖块数，
+  // 而两个目标物分列左右时一发物理上不可能同时命中）—— 那种情况看目标物数量。
+  const e = r.bestOne > 0 ? r.need / r.bestOne : NaN;
   console.log(
     `L${String(r.n).padEnd(4)}| ${String(r.total).padStart(6)} | ${String(r.need).padStart(4)} | ` +
     `${String(r.ammo).padStart(4)} | ${String(r.bestOne).padStart(8)} | ${(a * 100).toFixed(0).padStart(6)}% | ` +
     `${Number.isNaN(b) ? '   n/a' : ((b * 100).toFixed(0) + '%').padStart(8)} | ` +
+    `${Number.isNaN(e) ? '  n/a' : e.toFixed(2).padStart(5)} | ` +
     `${Number.isNaN(c) ? '   n/a' : (c.toFixed(1) + '×').padStart(8)}`
   );
 }

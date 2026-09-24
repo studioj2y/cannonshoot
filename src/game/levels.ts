@@ -66,7 +66,32 @@ export interface LevelDef {
   twoStarAmmoLeft: number; // ammo remaining required for 2 stars
   objective: Objective;
   ground: 'grass' | 'sand';
+  /** 挑战模式规则。省略即 `{ judge: 'complete' }`（见 ChallengeRule 说明） */
+  challenge?: ChallengeRule;
   bricks: BrickDef[];
+}
+
+/* ============================================================================
+   挑战模式（Challenge Mode）—— 每关只有 1 发弹药，一发定胜负，失败即重来。
+
+   判定基准来自「理论最少发数」`E = 目标 ÷ 一发最好`（见 GAME_DESIGN.md 第 3 节）：
+     · E ≤ 1（即 ⌈E⌉ = 1）⇒ 存在一发即胜的弹道 ⇒ 用 judge: 'complete'
+     · E > 1，或目标「形态上一发不可能完成」⇒ 用 judge: 'score'（积分判定）
+
+   ⚠️ 加关卡 / 改目标时按这条自查：**「这个目标能不能用一发同时达成？」**
+      不能，就必须写 judge: 'score' 并给一条 scoreLine，否则这关在挑战模式里
+      变成永远通不过的死关（因为只有 1 发，目标判据永远为假）。
+
+   ⚠️ scoreLine 的取值方法：`一发最好 × 100 × 0.6`，再取整到 50。
+      它按「一发能打掉的砖块数」派生（playtest.mjs 实测），不是拍脑袋——
+      但连击奖励会让实际得分高于这个估算，所以 0.6 这个系数是留了余量的。
+      **改关卡结构 ⇒ 必须重跑 playtest.mjs 并同步这两个数。**
+   ========================================================================== */
+export interface ChallengeRule {
+  /** complete：一发达成关卡目标即通过；score：不做完成判定，改用得分线 */
+  judge: 'complete' | 'score';
+  /** judge === 'score' 时的通过线 */
+  scoreLine?: number;
 }
 
 const rainbow: ColorKey[] = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
@@ -244,6 +269,9 @@ const DESIGNED_LEVELS: LevelDef[] = [
     twoStarAmmoLeft: 2,
     ground: 'grass',
     objective: { kind: 'color', color: 'red', count: 4 },
+    /* 挑战模式用积分判定：4 块红砖堆在挡板后面的高台上，一发最多只能吃到一侧，
+       「一发打掉 4 块红砖」在形态上不可靠。scoreLine = 一发最好 9 × 100 × 0.6 ≈ 550。 */
+    challenge: { judge: 'score', scoreLine: 550 },
     bricks: [
       // 左高台（顶面 4.0）：承载砖墙 + 桥面左端
       { shape: 'box', pos: [-7.0, 2.0, -24], size: [7.4, 4.0, 6], color: 'gray', static: true },
@@ -340,6 +368,10 @@ const DESIGNED_LEVELS: LevelDef[] = [
     twoStarAmmoLeft: 2,
     ground: 'grass',
     objective: { kind: 'targets' },
+    /* 挑战模式用积分判定：两个紫色目标物分列 x=−7 与 x=+7，一发物理上不可能
+       同时命中 ⇒ ⌈E⌉ = 2 而不是 1（这一点用「一发最好 ÷ 砖块数」看不出来，
+       正是 GAME_DESIGN.md §1.2 说的度量盲区）。scoreLine = 14 × 100 × 0.6 ≈ 850。 */
+    challenge: { judge: 'score', scoreLine: 850 },
     bricks: [
       // 左台顶面 2.0、右台顶面 3.0，中间那片是草地（y = 0）
       { shape: 'box', pos: [-7, 1.0, -26], size: [8, 2.0, 7], color: 'gray', static: true },

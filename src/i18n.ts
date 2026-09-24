@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { ColorKey, Objective } from './game/levels';
+import type { AmmoKind } from './game/ammo';
 
 /**
  * 全站文案的唯一出处。
@@ -95,7 +96,11 @@ interface UiText {
   target: (n: number) => string;
   ammo: string;
   power: string;
-  fire: string;
+  /* 右下角那颗按钮。原先写「发射」，但鼠标点画布 / 空格 / 触屏松手都能发射，
+     它其实是多余的 —— 现在改成**切换弹药**（见 GAME_DESIGN.md 第 4 节 ②）。 */
+  switchAmmo: string;
+  ammoName: Record<AmmoKind, string>;
+  ammoDesc: Record<AmmoKind, string>;
   combo: (n: number) => string;
   yaw: string;
   pitch: string;
@@ -115,6 +120,19 @@ interface UiText {
   lostTitle: string;
   progressLine: (progress: string, score: number) => string;
   tryAgain: string;
+  /* 挑战模式（一发定胜负，见 levels.ts 的 ChallengeRule） */
+  challengeBadge: string;
+  challengeToggle: string;
+  challengeToggleHint: string;
+  challengeGoal: string;
+  challengeLine: (n: number) => string;
+  challengeWinTitle: string;
+  challengeFailTitle: string;
+  challengeWonLine: string;
+  /* 选关：未解锁 / 进度汇总 / 清空 */
+  locked: string;
+  progressSummary: (cleared: number, total: number, stars: number, challenge: number) => string;
+  clearProgress: string;
 }
 
 export const UI: Record<Lang, UiText> = {
@@ -128,6 +146,7 @@ export const UI: Record<Lang, UiText> = {
       '💥 点击鼠标左键（或空格）发射。',
       '🧱 借助物理和连锁反应把建筑砸塌。',
       '🧊 半透明的玻璃砖一撞就碎，碎掉以后不再承重，上面会整片塌下来。',
+      '🔵 右下角的按钮可以切换弹药：标准弹 / 铁锤弹 / 爆破筒 / 三连发 —— 不同结构吃不同的球。',
       '⌨️ A/D 左右转 · W/S 调仰角 · R 重开 · Esc 暂停',
     ],
     tipsTouch: [
@@ -136,6 +155,7 @@ export const UI: Record<Lang, UiText> = {
       '🎚️ 先用底部滑杆调好力度，拖动时看轨迹线预判落点。',
       '🧱 借助物理和连锁反应把建筑砸塌。',
       '🧊 半透明的玻璃砖一撞就碎，碎掉以后不再承重，上面会整片塌下来。',
+      '🔵 右下角的按钮可以切换弹药：标准弹 / 铁锤弹 / 爆破筒 / 三连发。',
       '⏸ 右上角可以暂停或重开本关。',
     ],
     start: '开始游戏',
@@ -150,7 +170,14 @@ export const UI: Record<Lang, UiText> = {
     target: (n) => `目标 ${n}`,
     ammo: '炮弹',
     power: '力度',
-    fire: '发射！💥',
+    switchAmmo: '切换弹药',
+    ammoName: { standard: '标准弹', hammer: '铁锤弹', bomb: '爆破筒', triple: '三连发' },
+    ammoDesc: {
+      standard: '通用。质量与初速都是其余三种的基准值。',
+      hammer: '质量翻倍、撞得动厚墙与平台边缘；代价是初速低——射程只有标准弹的约 77%，得把力度调高。',
+      bomb: '碰到东西立刻引爆，范围 3.4 米。拆玻璃和密集砖最狠，但也会连带掀掉自己脚下的结构。',
+      triple: '一次三颗、左右各偏 7°。单颗动能只有标准弹的一半，打不动厚墙；胜在能同时够到三个分开的承重单元。',
+    },
     combo: (n) => `连击 x${n}！`,
     yaw: '水平角',
     pitch: '仰角',
@@ -168,6 +195,18 @@ export const UI: Record<Lang, UiText> = {
     lostTitle: '炮弹用完了！😅',
     progressLine: (progress, score) => `进度：${progress} · 得分：${score}`,
     tryAgain: '再试一次',
+    challengeBadge: '⚡ 挑战',
+    challengeToggle: '⚡ 挑战模式',
+    challengeToggleHint: '每关只有 1 发炮弹，一发定胜负，失败即重来。',
+    challengeGoal: '挑战目标',
+    challengeLine: (n) => `积分线 ${n}`,
+    challengeWinTitle: '挑战成功！🏆',
+    challengeFailTitle: '挑战失败',
+    challengeWonLine: '一发定胜负 —— 这一关你过了。',
+    locked: '未解锁',
+    progressSummary: (cleared, total, stars, challenge) =>
+      `已通关 ${cleared}/${total} · 星级 ${stars} · 挑战 ${challenge}/${total}`,
+    clearProgress: '清空进度',
   },
   en: {
     docTitle: 'Color Brick Cannon — 3D Physics Puzzle',
@@ -179,6 +218,7 @@ export const UI: Record<Lang, UiText> = {
       '💥 Click the left mouse button (or Space) to fire.',
       '🧱 Use physics and chain reactions to knock down the structure.',
       '🧊 Translucent glass bricks shatter on impact and stop supporting anything — whatever is above comes down.',
+      '🔵 The bottom-right button cycles ammo: Standard / Hammer / Bomb / Triple — different structures want different shots.',
       '⌨️ A/D rotate · W/S elevate · R restart · Esc pause',
     ],
     tipsTouch: [
@@ -187,6 +227,7 @@ export const UI: Record<Lang, UiText> = {
       '🎚️ Set the power with the bottom slider; the trajectory line previews the shot.',
       '🧱 Use physics and chain reactions to knock down the structure.',
       '🧊 Translucent glass bricks shatter on impact and stop supporting anything — whatever is above comes down.',
+      '🔵 The bottom-right button cycles ammo: Standard / Hammer / Bomb / Triple.',
       '⏸ Pause or restart from the top-right buttons.',
     ],
     start: 'START PLAYING',
@@ -201,7 +242,14 @@ export const UI: Record<Lang, UiText> = {
     target: (n) => `target ${n}`,
     ammo: 'CANNONBALLS',
     power: 'POWER',
-    fire: 'FIRE! 💥',
+    switchAmmo: 'Switch ammo',
+    ammoName: { standard: 'Standard', hammer: 'Hammer', bomb: 'Bomb', triple: 'Triple' },
+    ammoDesc: {
+      standard: 'The baseline — every other ball is measured against its mass and speed.',
+      hammer: 'Double the mass: it breaks thick walls and platform edges. The cost is speed — only ~77% of the standard range, so raise the power.',
+      bomb: 'Detonates the instant it touches anything, within 3.4m. The best glass-breaker there is, and the fastest way to take your own footing down with it.',
+      triple: 'Three balls, ±7° apart. Each carries about half the standard energy, so thick walls shrug it off — but it reaches three separate load-bearing units at once.',
+    },
     combo: (n) => `COMBO x${n}!`,
     yaw: 'Yaw',
     pitch: 'Elevation',
@@ -219,6 +267,18 @@ export const UI: Record<Lang, UiText> = {
     lostTitle: 'Out of cannonballs! 😅',
     progressLine: (progress, score) => `Progress: ${progress} · Score ${score}`,
     tryAgain: 'Try Again',
+    challengeBadge: '⚡ CHALLENGE',
+    challengeToggle: '⚡ Challenge Mode',
+    challengeToggleHint: 'One shot per level. Miss the goal and you start over.',
+    challengeGoal: 'Challenge goal',
+    challengeLine: (n) => `score line ${n}`,
+    challengeWinTitle: 'CHALLENGE CLEARED! 🏆',
+    challengeFailTitle: 'Challenge failed',
+    challengeWonLine: 'One shot, one level — you made it.',
+    locked: 'Locked',
+    progressSummary: (cleared, total, stars, challenge) =>
+      `Cleared ${cleared}/${total} · ${stars} stars · Challenge ${challenge}/${total}`,
+    clearProgress: 'Reset progress',
   },
 };
 

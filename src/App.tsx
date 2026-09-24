@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Game, type HudState } from './game/Game';
 import { LEVELS } from './game/levels';
+import { AMMO, AMMO_ORDER, ammoIndex } from './game/ammo';
+import {
+  isUnlocked,
+  markChallengePassed,
+  markCleared,
+  recordStars,
+  resetProgress,
+  useProgress,
+} from './progress';
 import { audio } from './game/audio';
 import { UI, objectiveText, resolve, useLang, type Lang } from './i18n';
 
@@ -101,7 +110,9 @@ export default function App() {
   const [traj, setTraj] = useState(true);
   const [sound, setSound] = useState(true);
   const [tutorial, setTutorial] = useState(true);
-  const [best, setBest] = useState<Record<number, number>>({});
+  /* 进度（解锁门槛 / 最好星级 / 挑战通过）—— 落在 localStorage，刷新不清零。
+     语言偏好用的是另一个存储键（见 i18n.ts），两者刻意分开。 */
+  const progress = useProgress();
   /* 开局提示条：每关的 lv.hint 原先只是躺在关卡数据里、界面上没人用（玩家看不到）。
      现在做成进关后浮出几秒的提示 —— 新机制（比如玻璃砖）总得有人跟玩家说一句。 */
   const [hintOn, setHintOn] = useState(true);
@@ -142,14 +153,36 @@ export default function App() {
     return () => clearTimeout(t);
   }, [hud?.level, tutorial]);
 
+  /* 通关就落盘。挑战模式与普通模式写的是两套记录：
+     · 普通 —— 「已通关」（关卡解锁门槛读它）+ 最好星级
+     · 挑战 —— 单独一条挑战通过记录，**不写普通星级**（两套判定互不干扰）
+     两个写入函数都是幂等的（已为 true / 星级没变高就直接 return），
+     所以这个 effect 多触发几次没有副作用。 */
   useEffect(() => {
-    if (hud?.status === 'won') setBest((b) => ({ ...b, [hud.level]: Math.max(b[hud.level] || 0, hud.stars) }));
-  }, [hud?.status, hud?.stars, hud?.level]);
+    if (hud?.status !== 'won') return;
+    const i = hud.level - 1;
+    if (hud.challenge) {
+      markChallengePassed(i);
+      /* 一发达成本来就比普通通关更难，所以挑战通过也解锁下一关 ——
+         否则打完挑战模式还得切回普通模式再打一遍才能往下走，很别扭。 */
+      markCleared(i);
+    } else {
+      markCleared(i);
+      recordStars(i, hud.stars);
+    }
+  }, [hud?.status, hud?.stars, hud?.level, hud?.challenge]);
 
   const g = gameRef.current;
   // 界面文案统一在这里按关卡序号取，引擎只负责传数值（见 i18n.ts）
   const lv = hud ? LEVELS[hud.level - 1] ?? LEVELS[0] : LEVELS[0];
   const aiming = !!hud?.aiming;
+  const clearedCount = progress.cleared.filter(Boolean).length;
+  const challengeCount = progress.challenge.filter(Boolean).length;
+  const totalStars = progress.stars.reduce((a, b) => a + b, 0);
+  /* 挑战模式的关内目标文案：积分判定的关卡（一发打不完的那种）显示积分线，
+     其余显示原目标 —— 判据来自关卡数据，不在这里猜。 */
+  const showScoreGoal = !!hud?.challenge && (hud?.challengeLine ?? 0) > 0;
+  const goalText = showScoreGoal ? s.challengeGoal : objectiveText(lv.objective, lang);
 
   return (
     <div className="w-screen h-screen overflow-hidden relative bg-[#a9d3ea] select-none font-sans">
@@ -160,11 +193,25 @@ export default function App() {
           {/* Top HUD —— 容器本身不吃事件，只有各张卡片吃，这样卡片之间的空隙也能用来瞄准 */}
           <div className="absolute top-2 left-2 right-2 sm:top-3 sm:left-3 sm:right-3 flex justify-between items-start pointer-events-none gap-1.5 sm:gap-3">
             <div className={`pointer-events-auto ${CARD} px-3 py-1.5 sm:px-4 sm:py-2.5 max-w-[42vw] sm:max-w-none`}>
-              <div className="text-[10px] sm:text-xs font-bold text-[#7a6d5c]">{s.levelLabel(hud.level, LEVELS.length)}</div>
+              <div className="text-[10px] sm:text-xs font-bold text-[#7a6d5c] flex items-center gap-1.5">
+                <span>{s.levelLabel(hud.level, LEVELS.length)}</span>
+                {hud.challenge && (
+                  <span className="px-1.5 py-px rounded-md bg-[#8e6e9e] text-white text-[9px] sm:text-[10px] leading-tight">
+                    {s.challengeBadge}
+                  </span>
+                )}
+              </div>
               <div className="text-base sm:text-xl font-black text-[#3a3129] leading-tight truncate">{resolve(lv.name, lang)}</div>
               <div className="text-[11px] sm:text-sm font-bold leading-tight text-[#a8563a]">
-                🎯 {objectiveText(lv.objective, lang)} <span className="text-[#7a6d5c]">({hud.objectiveProgress})</span>
+                🎯 {goalText} <span className="text-[#7a6d5c]">({hud.objectiveProgress})</span>
               </div>
+              {/* 走积分判定的关：把「积分线」和这一关原本的目标一起写出来，
+                  否则玩家会以为是目标被换掉了 */}
+              {showScoreGoal && (
+                <div className="text-[10px] sm:text-xs font-bold leading-tight text-[#7a6d5c] truncate">
+                  {s.challengeLine(hud.challengeLine)} · {objectiveText(lv.objective, lang)}
+                </div>
+              )}
             </div>
 
             <div className={`pointer-events-auto ${CARD} px-3 py-1.5 sm:px-4 sm:py-2.5 text-center`}>
@@ -273,56 +320,112 @@ export default function App() {
               </div>
             </div>
 
-            {/* 触屏上松手就会发射，这颗按钮是留给「已瞄好、想连发」和不知情的玩家的 */}
+            {/* 这颗按钮原先写「发射！💥」，但鼠标点画布 / 空格 / 触屏松手都能发射，
+                它其实是多余的 —— 现在改成**切换弹药**（循环，见 ammo.ts 的 AMMO_ORDER）。
+                那个圆点用弹药自己的颜色：内联 style 而不是 Tailwind 类名，
+                因为动态色值走 `bg-[${x}]` 插值时 Tailwind 扫描不到，不会生成 CSS。 */}
             <button
-              onClick={() => g?.fire()}
-              className="pointer-events-auto shrink-0 px-4 py-3 text-base sm:px-8 sm:py-5 sm:text-2xl rounded-2xl sm:rounded-3xl font-black text-white bg-[#d9544d] border-2 sm:border-[3px] border-[#3a3129] shadow-[0_5px_0_#3a3129] sm:shadow-[0_8px_0_#3a3129] active:shadow-none active:translate-y-1 sm:active:translate-y-2 transition-transform duration-75"
+              onClick={() => g?.cycleAmmo()}
+              title={s.ammoDesc[hud.ammoKind]}
+              className="pointer-events-auto shrink-0 flex flex-col items-center gap-0.5 px-3 py-2 sm:px-5 sm:py-3 rounded-2xl sm:rounded-3xl font-black text-white bg-[#5d8fa8] border-2 sm:border-[3px] border-[#3a3129] shadow-[0_5px_0_#3a3129] sm:shadow-[0_8px_0_#3a3129] active:shadow-none active:translate-y-1 sm:active:translate-y-2 transition-transform duration-75"
             >
-              {s.fire}
+              <span className="text-[9px] sm:text-[10px] font-bold opacity-90 leading-none">{s.switchAmmo}</span>
+              <span className="flex items-center gap-1.5 text-xs sm:text-lg leading-none">
+                <span
+                  className="inline-block w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 rounded-full border border-[#3a3129]"
+                  style={{ background: `#${AMMO[hud.ammoKind].color.toString(16).padStart(6, '0')}` }}
+                />
+                {s.ammoName[hud.ammoKind]}
+              </span>
+              <span className="text-[9px] sm:text-[10px] font-bold opacity-90 leading-none">
+                {ammoIndex(hud.ammoKind) + 1} / {AMMO_ORDER.length}
+              </span>
             </button>
           </div>
         </>
       )}
 
-      {/* Tutorial（首页：语言切换在这里） */}
+      {/* Tutorial（首页：语言切换 + 挑战模式开关都在这里） */}
       {tutorial && (
         <Overlay>
           <h1 className="text-3xl sm:text-5xl font-black text-[#3a3129] mb-2">{s.title}</h1>
           <p className="text-[#7a6d5c] font-bold mb-3 sm:mb-4 text-sm sm:text-base">{s.subtitle}</p>
-          <div className="mb-4 sm:mb-5">
+          <div className="flex flex-col items-center gap-2 sm:gap-3 mb-4 sm:mb-5">
             <LangSwitch lang={lang} onChange={setLang} />
+            {/* 挑战模式开关。⚠️ 它会重开本关（弹药数从 5~6 变成 1，没有「半路切换」
+                这种状态）。所以这里只读 hud.challenge 作为显示源，不另存一份 state。 */}
+            <label className="flex items-center gap-2 cursor-pointer rounded-2xl bg-[#efe6d2] border-2 border-[#cfc6b4] px-3 py-2">
+              <input
+                type="checkbox"
+                checked={!!hud?.challenge}
+                onChange={(e) => g?.setChallenge(e.target.checked)}
+                className="accent-[#8e6e9e] w-4 h-4"
+              />
+              <span className="text-xs sm:text-sm font-extrabold text-[#3a3129]">{s.challengeToggle}</span>
+            </label>
+            <p className="text-[11px] sm:text-xs font-bold text-[#7a6d5c] max-w-[42ch]">{s.challengeToggleHint}</p>
           </div>
           <ul className="text-left text-[#3a3129] font-semibold space-y-1.5 sm:space-y-2 bg-[#efe6d2] border-2 border-[#ded4bf] rounded-2xl p-4 sm:p-5 mb-4 sm:mb-5 text-xs sm:text-base">
             {tips.map((tip) => (
               <li key={tip}>{tip}</li>
             ))}
           </ul>
+          {clearedCount > 0 && (
+            <p className="mb-3 sm:mb-4 text-[11px] sm:text-sm font-bold text-[#7a6d5c]">
+              {s.progressSummary(clearedCount, LEVELS.length, totalStars, challengeCount)}
+            </p>
+          )}
           <Btn tone="green" onClick={() => setTutorial(false)}>
             {IS_TOUCH ? s.startTouch : s.start}
           </Btn>
         </Overlay>
       )}
 
-      {/* Pause */}
+      {/* Pause / 选关 */}
       {paused && !tutorial && (
         <Overlay>
-          <h2 className="text-3xl sm:text-4xl font-black text-[#3a3129] mb-4">{s.pauseTitle}</h2>
+          <h2 className="text-3xl sm:text-4xl font-black text-[#3a3129] mb-3">{s.pauseTitle}</h2>
+          <p className="mb-4 text-[11px] sm:text-sm font-bold text-[#7a6d5c]">
+            {s.progressSummary(clearedCount, LEVELS.length, totalStars, challengeCount)}
+          </p>
+          {/* 选关：按「完成前一关解锁下一关」上锁。锁住的用 disabled + 虚线边框，
+              不用「点了没反应」—— 玩家要能一眼看出是锁着而不是坏了。 */}
           <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-5">
-            {LEVELS.map((l, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  audio.play('click');
-                  g?.loadLevel(i);
-                  setPaused(false);
-                }}
-                className="bg-[#efe6d2] hover:bg-[#e7c169] border-2 border-[#cfc6b4] rounded-xl px-3 py-2 text-[#3a3129] font-bold text-xs shadow-[0_3px_0_#c8bda6] active:shadow-none active:translate-y-[3px] transition-transform duration-75"
-              >
-                <div className="text-base font-black text-[#d9544d] leading-none">{i + 1}</div>
-                <div className="text-[10px] opacity-80">{resolve(l.name, lang)}</div>
-                <Stars n={best[i + 1] || 0} size="text-[10px]" />
-              </button>
-            ))}
+            {LEVELS.map((l, i) => {
+              const unlocked = isUnlocked(progress, i);
+              return (
+                <button
+                  key={i}
+                  disabled={!unlocked}
+                  onClick={() => {
+                    audio.play('click');
+                    g?.loadLevel(i);
+                    setPaused(false);
+                  }}
+                  className={
+                    unlocked
+                      ? 'relative bg-[#efe6d2] hover:bg-[#e7c169] border-2 border-[#cfc6b4] rounded-xl px-3 py-2 text-[#3a3129] font-bold text-xs shadow-[0_3px_0_#c8bda6] active:shadow-none active:translate-y-[3px] transition-transform duration-75'
+                      : 'relative bg-[#e6e0d2] border-2 border-dashed border-[#cfc6b4] rounded-xl px-3 py-2 text-[#a89f8e] font-bold text-xs cursor-not-allowed'
+                  }
+                >
+                  {progress.challenge[i] && (
+                    <span className="absolute top-1 right-1 text-[10px] leading-none">⚡</span>
+                  )}
+                  {unlocked ? (
+                    <>
+                      <div className="text-base font-black text-[#d9544d] leading-none">{i + 1}</div>
+                      <div className="text-[10px] opacity-80">{resolve(l.name, lang)}</div>
+                      <Stars n={progress.stars[i] || 0} size="text-[10px]" />
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-base leading-none">🔒</div>
+                      <div className="text-[10px]">{s.locked}</div>
+                    </>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div className="flex gap-3 justify-center">
             <Btn tone="green" onClick={() => setPaused(false)}>
@@ -332,35 +435,98 @@ export default function App() {
               {s.restart}
             </Btn>
           </div>
-          <div className="mt-5 pt-4 border-t-2 border-[#ded4bf]">
-            <div className="text-xs font-bold text-[#7a6d5c] mb-2">{s.langLabel}</div>
+
+          {/* 弹药图鉴：右下角那颗按钮只放得下一个名字，四种弹药的差别写在空间够的地方 */}
+          <div className="mt-5 pt-4 border-t-2 border-[#ded4bf] text-left">
+            <div className="text-xs font-bold text-[#7a6d5c] mb-2 text-center">{s.switchAmmo}</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {AMMO_ORDER.map((k) => (
+                <div
+                  key={k}
+                  className={`flex gap-2 items-start rounded-xl border-2 px-2.5 py-2 ${
+                    hud?.ammoKind === k ? 'border-[#5d8fa8] bg-[#e6eef2]' : 'border-[#ded4bf] bg-[#efe6d2]'
+                  }`}
+                >
+                  <span
+                    className="mt-1 inline-block w-3 h-3 rounded-full border border-[#3a3129] shrink-0"
+                    style={{ background: `#${AMMO[k].color.toString(16).padStart(6, '0')}` }}
+                  />
+                  <div>
+                    <div className="text-[11px] sm:text-xs font-black text-[#3a3129]">{s.ammoName[k]}</div>
+                    <div className="text-[10px] sm:text-[11px] font-semibold text-[#7a6d5c] leading-snug">
+                      {s.ammoDesc[k]}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 pt-4 border-t-2 border-[#ded4bf] flex flex-col items-center gap-2">
+            <label className="flex items-center gap-2 cursor-pointer rounded-2xl bg-[#efe6d2] border-2 border-[#cfc6b4] px-3 py-2">
+              <input
+                type="checkbox"
+                checked={!!hud?.challenge}
+                onChange={(e) => g?.setChallenge(e.target.checked)}
+                className="accent-[#8e6e9e] w-4 h-4"
+              />
+              <span className="text-xs sm:text-sm font-extrabold text-[#3a3129]">{s.challengeToggle}</span>
+            </label>
+            <p className="text-[10px] sm:text-[11px] font-bold text-[#7a6d5c] max-w-[42ch]">{s.challengeToggleHint}</p>
+            <div className="mt-1 text-xs font-bold text-[#7a6d5c]">{s.langLabel}</div>
             <LangSwitch lang={lang} onChange={setLang} />
+            {clearedCount > 0 && (
+              <button
+                onClick={() => resetProgress()}
+                className="mt-1 text-[10px] sm:text-xs font-bold text-[#a89f8e] underline"
+              >
+                {s.clearProgress}
+              </button>
+            )}
           </div>
         </Overlay>
       )}
 
-      {/* Win / Lose */}
+      {/* Win / Lose —— 挑战模式有自己的两种结局（判据见 levels.ts 的 ChallengeRule） */}
       {hud && hud.status !== 'playing' && !paused && (
         <Overlay>
           {hud.status === 'won' ? (
-            <>
-              <h2 className="text-4xl sm:text-5xl font-black text-[#a8563a] mb-2">{s.wonTitle}</h2>
-              <Stars n={hud.stars} size="text-5xl sm:text-6xl" />
-              <p className="text-[#3a3129] font-bold text-xl sm:text-2xl my-3">{s.scoreLine(hud.score)}</p>
-              <p className="text-[#7a6d5c] text-xs sm:text-sm mb-4">{s.starRule(lv.twoStarAmmoLeft, hud.targetScore)}</p>
-              <div className="flex gap-3 justify-center">
-                <Btn tone="pink" onClick={() => g?.reset()}>
-                  {s.replay}
-                </Btn>
-                <Btn tone="green" onClick={() => g?.nextLevel()}>
-                  {hud.level < LEVELS.length ? s.nextLevel : s.backToFirst}
-                </Btn>
-              </div>
-            </>
+            hud.challenge ? (
+              <>
+                <h2 className="text-4xl sm:text-5xl font-black text-[#8e6e9e] mb-2">{s.challengeWinTitle}</h2>
+                <p className="text-[#3a3129] font-bold text-xl sm:text-2xl my-3">{s.scoreLine(hud.score)}</p>
+                <p className="text-[#7a6d5c] text-xs sm:text-sm mb-4">{s.challengeWonLine}</p>
+                <div className="flex gap-3 justify-center">
+                  <Btn tone="pink" onClick={() => g?.reset()}>
+                    {s.replay}
+                  </Btn>
+                  <Btn tone="green" onClick={() => g?.nextLevel()}>
+                    {hud.level < LEVELS.length ? s.nextLevel : s.backToFirst}
+                  </Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-4xl sm:text-5xl font-black text-[#a8563a] mb-2">{s.wonTitle}</h2>
+                <Stars n={hud.stars} size="text-5xl sm:text-6xl" />
+                <p className="text-[#3a3129] font-bold text-xl sm:text-2xl my-3">{s.scoreLine(hud.score)}</p>
+                <p className="text-[#7a6d5c] text-xs sm:text-sm mb-4">{s.starRule(lv.twoStarAmmoLeft, hud.targetScore)}</p>
+                <div className="flex gap-3 justify-center">
+                  <Btn tone="pink" onClick={() => g?.reset()}>
+                    {s.replay}
+                  </Btn>
+                  <Btn tone="green" onClick={() => g?.nextLevel()}>
+                    {hud.level < LEVELS.length ? s.nextLevel : s.backToFirst}
+                  </Btn>
+                </div>
+              </>
+            )
           ) : (
             <>
-              <h2 className="text-4xl sm:text-5xl font-black text-[#3a3129] mb-2">{s.lostTitle}</h2>
-              <p className="text-[#3a3129] font-bold mb-1">{objectiveText(lv.objective, lang)}</p>
+              <h2 className="text-4xl sm:text-5xl font-black text-[#3a3129] mb-2">
+                {hud.challenge ? s.challengeFailTitle : s.lostTitle}
+              </h2>
+              <p className="text-[#3a3129] font-bold mb-1">{goalText}</p>
               <p className="text-[#7a6d5c] mb-4 text-sm sm:text-base">{s.progressLine(hud.objectiveProgress, hud.score)}</p>
               <div className="flex gap-3 justify-center">
                 <Btn tone="green" onClick={() => g?.reset()}>
