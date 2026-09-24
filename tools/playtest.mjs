@@ -311,6 +311,24 @@ function runPlan(ctx, plan) {
   const balls = [];
   const dt = 1 / 60;
   let t = 0;
+  /* 计分复刻 Game.ts 的 checkKnocked：每块 100 分；与上一块击倒间隔 < 1600ms
+     记连击，第 k 块再加 25%×(k-1)。逐帧比对击倒数增量即可 ——
+     同一帧内多块按同一时刻算，与游戏里一帧扫一遍的行为一致。 */
+  let score = 0;
+  let combo = 0;
+  let comboUntil = -1;
+  let seen = 0;
+  const tick = () => {
+    const n = knockStats(items).length;
+    if (n <= seen) return;
+    const nowMs = t * 1000;
+    for (let i = seen; i < n; i++) {
+      combo = nowMs < comboUntil ? combo + 1 : 1;
+      comboUntil = nowMs + 1600;
+      score += 100 + (combo > 1 ? Math.round(100 * 0.25 * (combo - 1)) : 0);
+    }
+    seen = n;
+  };
   for (const shot of plan) {
     fire(world, balls, ballMat, shot, t);
     let waited = 0;
@@ -318,14 +336,16 @@ function runPlan(ctx, plan) {
       stepWorld(world, balls, items, dt, t);
       t += dt;
       waited += dt;
+      tick();
       if (waited > 0.35 && settled(items, balls)) break;
     }
   }
   for (let s = 0; s < TAIL * 60; s++) {
     stepWorld(world, balls, items, dt, t);
     t += dt;
+    tick();
   }
-  return knockStats(items);
+  return { knocked: knockStats(items), score };
 }
 
 /* ---------------- 候选炮弹 ---------------- */
@@ -424,11 +444,15 @@ for (const { lv, n } of targets) {
 
   let bestOne = 0;
   let bestShot = null;
+  let bestScore = 0; // 「一发最好」那一发的实际得分
+  let maxScore = 0;  // 所有候选里的单发最高分 —— 定挑战积分线看这个
   const all = [];
   for (let i = 0; i < grid.length; i++) {
-    const k = runPlan(ctx, [grid[i]]).length;
+    const r = runPlan(ctx, [grid[i]]);
+    const k = r.knocked.length;
     all.push(k);
-    if (k > bestOne) { bestOne = k; bestShot = grid[i]; }
+    if (r.score > maxScore) maxScore = r.score;
+    if (k > bestOne) { bestOne = k; bestShot = grid[i]; bestScore = r.score; }
     if (i % 10 === 0) SAY(`  L${n} 扫描 ${i}/${grid.length}\r`);
   }
   /* 分布是这套复现的「体检指标」：
@@ -448,7 +472,7 @@ for (const { lv, n } of targets) {
     for (let k = 1; k < SHOTS; k++) {
       let best = { c: null, n: -1 };
       for (const c of grid) {
-        const got = runPlan(ctx, [...plan, c]).length;
+        const got = runPlan(ctx, [...plan, c]).knocked.length;
         if (got > best.n) best = { c, n: got };
       }
       plan.push(best.c);
@@ -464,7 +488,7 @@ for (const { lv, n } of targets) {
     `   一发最好 ${bestOne}/${total}（${((bestOne / total) * 100).toFixed(0)}%）` +
     ` · 占目标 ${need ? ((bestOne / need) * 100).toFixed(0) + '%' : 'n/a'}` +
     ` · 贪心 ${curve.length} 发 ${finalKnocked}/${need}` +
-    ` · 候选 ${grid.length} 个\n`
+    ` · 候选 ${grid.length} 个 · 单发最高分 ${maxScore}（一发最好那发 ${bestScore} 分）\n`
   );
 }
 
